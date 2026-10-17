@@ -196,7 +196,7 @@ def get_history(exercise: Optional[str] = None, date_from: Optional[str] = None,
     try:
         query = session.query(
             SetLog.id,
-            DBSession.actual_date,
+            DBSession.actual_date.label("date"),
             Exercise.name.label("exercise_name"),
             SetLog.actual_load_lb.label("weight"),
             SetLog.actual_reps.label("reps"),

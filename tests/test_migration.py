@@ -46,9 +46,10 @@ from app.database import (
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def db_url():
-    """Provide an in-memory SQLite database URL for each test."""
-    return "sqlite:///:memory:"
+def db_url(tmp_path):
+    """Provide a file-based SQLite database URL for each test."""
+    db_file = tmp_path / "test.db"
+    return f"sqlite:///{db_file}"
 
 
 @pytest.fixture()
@@ -486,11 +487,8 @@ def client(db_url):
 
     init_db(db_url)
 
-    # Seed TrainingEntry and migrate
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    engine = create_engine(db_url)
-    factory = sessionmaker(bind=engine)
+    # Seed TrainingEntry and migrate using the module-level engine
+    factory = sessionmaker(bind=get_engine(db_url))
     session = factory()
 
     session.execute(text("""

@@ -320,10 +320,23 @@ _session_factory: Optional[object] = None
 
 
 def get_engine(db_url: str = "sqlite:///strongman_coach.db"):
-    """Return (or create) a SQLAlchemy engine."""
+    """Return (or create) a SQLAlchemy engine.
+
+    For in-memory SQLite (:memory:), uses StaticPool so all connections
+    share the same database.
+    """
     global _engine
     if _engine is None:
-        _engine = create_engine(db_url, echo=False)
+        if "sqlite" in db_url and ":memory:" in db_url:
+            from sqlalchemy.pool import StaticPool
+            _engine = create_engine(
+                db_url,
+                echo=False,
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool,
+            )
+        else:
+            _engine = create_engine(db_url, echo=False)
     return _engine
 
 
