@@ -26,6 +26,12 @@ from app.database import (
     migrate_from_training_entry,
     sessionmaker,
 )
+from app.strength.warmup_backoff import (
+    generate_warmups,
+    calculate_backoff,
+    calculate_backoff_series,
+    get_default_drop_pct,
+)
 
 app = FastAPI(title="Strongman Coach")
 
@@ -69,6 +75,27 @@ class TrainingEntryResponse(BaseModel):
     reps: int
     sets: int
     notes: Optional[str] = None
+
+
+class WarmupRequest(BaseModel):
+    """Request to generate warm-up sets for an exercise."""
+    exercise_name: str
+    top_set_weight: float
+    reps: int = 3
+    plate_increment: float = 2.5
+    bar_weight: float = 45.0
+
+
+class BackoffRequest(BaseModel):
+    """Request to generate back-off sets for an exercise."""
+    exercise_name: str
+    top_set_weight: float
+    reps: int = 3
+    rpe: Optional[float] = None
+    drop_pct: Optional[float] = None
+    phase: Optional[str] = None
+    notes: Optional[str] = None
+    max_sets: int = 6
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +208,249 @@ def log_entry(entry: TrainingEntryCreate):
     except Exception:
         session.rollback()
         raise HTTPException(status_code=500, detail="Failed to log entry")
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /warmups – Generate and store warm-up prescriptions for an exercise
+# ---------------------------------------------------------------------------
+
+@app.post("/warmups")
+def generate_warmup_sets(req: WarmupRequest):
+    """Generate warm-up sets and store them as prescriptions in the session.
+
+    Warm-ups are auto-generated as a progression toward the top-set weight:
+    empty bar → 40% → 60% → 80% of top-set weight, rounded to plate increment.
+    """
+    session = _get_session()
+    try:
+        # Ensure exercise exists
+        ex = session.query(Exercise).filter_by(name=req.exercise_name).first()
+        if not ex:
+            ex = Exercise(name=req.exercise_name, role="accessory", metric_type="load_reps")
+            session.add(ex)
+            session.flush()
+
+        # Find or create a session for today
+        today = datetime.date.today()
+        db_sess = session.query(DBSession).filter_by(
+            scheduled_date=today, status="in_progress"
+        ).first()
+
+        if not db_sess:
+            from app.database import Program, Block, Cycle
+            program = session.query(Program).filter_by(is_active=True).first()
+            if not program:
+                program = Program(
+                    athlete_id=1,
+                    name="Default Program",
+                    phase="accumulation",
+                    start_date=today,
+                    is_active=True,
+                )
+                session.add(program)
+                session.flush()
+
+            block = session.query(Block).filter_by(program_id=program.id).first()
+            if not block:
+                block = Block(
+                    program_id=program.id,
+                    block_number=1,
+                    start_date=today,
+                )
+                session.add(block)
+                session.flush()
+
+            cycle = session.query(Cycle).filter_by(block_id=block.id).first()
+            if not cycle:
+                cycle = Cycle(
+                    block_id=block.id,
+                    cycle_number=1,
+                    start_date=today,
+                )
+                session.add(cycle)
+                session.flush()
+
+            db_sess = DBSession(
+                cycle_id=cycle.id,
+                day_label="A",
+                scheduled_date=today,
+                actual_date=today,
+                status="in_progress",
+            )
+            session.add(db_sess)
+            session.flush()
+
+        # Generate warm-up sets
+        warmups = generate_warmups(
+            top_set_weight=req.top_set_weight,
+            reps=req.reps,
+            plate_increment=req.plate_increment,
+            bar_weight=req.bar_weight,
+        )
+
+        # Store each warm-up as a prescription
+        prescription_ids = []
+        for i, warmup in enumerate(warmups):
+            pres = Prescription(
+                session_id=db_sess.id,
+                exercise_id=ex.id,
+                set_number=i + 1,
+                prescribed_reps=warmup.reps,
+                prescribed_load_lb=warmup.load_lb,
+                is_warmup=True,
+                is_backoff=False,
+                fatigue_drop_pct=0.0,
+            )
+            session.add(pres)
+            session.flush()
+            prescription_ids.append(pres.id)
+
+        session.commit()
+        return {
+            "generated": True,
+            "prescription_ids": prescription_ids,
+            "warmup_count": len(warmups),
+            "warmups": [
+                {"load_lb": w.load_lb, "reps": w.reps, "is_empty_bar": w.is_empty_bar}
+                for w in warmups
+            ],
+        }
+
+    except Exception:
+        session.rollback()
+        raise HTTPException(status_code=500, detail="Failed to generate warm-up sets")
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /backoffs – Generate and store back-off prescriptions for an exercise
+# ---------------------------------------------------------------------------
+
+@app.post("/backoffs")
+def generate_backoff_sets(req: BackoffRequest):
+    """Generate back-off sets and store them as prescriptions in the session.
+
+    Back-off sets calculate weight as top_set_weight × (1 - drop_pct/100)
+    using the configured drop percentage per block phase.
+    """
+    session = _get_session()
+    try:
+        # Ensure exercise exists
+        ex = session.query(Exercise).filter_by(name=req.exercise_name).first()
+        if not ex:
+            ex = Exercise(name=req.exercise_name, role="accessory", metric_type="load_reps")
+            session.add(ex)
+            session.flush()
+
+        # Find or create a session for today
+        today = datetime.date.today()
+        db_sess = session.query(DBSession).filter_by(
+            scheduled_date=today, status="in_progress"
+        ).first()
+
+        if not db_sess:
+            from app.database import Program, Block, Cycle
+            program = session.query(Program).filter_by(is_active=True).first()
+            if not program:
+                program = Program(
+                    athlete_id=1,
+                    name="Default Program",
+                    phase="accumulation",
+                    start_date=today,
+                    is_active=True,
+                )
+                session.add(program)
+                session.flush()
+
+            block = session.query(Block).filter_by(program_id=program.id).first()
+            if not block:
+                block = Block(
+                    program_id=program.id,
+                    block_number=1,
+                    start_date=today,
+                )
+                session.add(block)
+                session.flush()
+
+            cycle = session.query(Cycle).filter_by(block_id=block.id).first()
+            if not cycle:
+                cycle = Cycle(
+                    block_id=block.id,
+                    cycle_number=1,
+                    start_date=today,
+                )
+                session.add(cycle)
+                session.flush()
+
+            db_sess = DBSession(
+                cycle_id=cycle.id,
+                day_label="A",
+                scheduled_date=today,
+                actual_date=today,
+                status="in_progress",
+            )
+            session.add(db_sess)
+            session.flush()
+
+        # Determine drop percentage
+        if req.drop_pct is not None:
+            drop_pct = req.drop_pct
+        elif req.phase is not None:
+            drop_pct = get_default_drop_pct(req.phase)
+        else:
+            drop_pct = get_default_drop_pct("accumulation")
+
+        # Generate back-off series
+        backoffs = calculate_backoff_series(
+            top_set_weight=req.top_set_weight,
+            drop_pct=drop_pct,
+            exercise=req.exercise_name,
+            reps=req.reps,
+            rpe=req.rpe,
+            notes=req.notes or "",
+            max_sets=req.max_sets,
+        )
+
+        # Store each back-off as a prescription
+        prescription_ids = []
+        for i, backoff in enumerate(backoffs):
+            pres = Prescription(
+                session_id=db_sess.id,
+                exercise_id=ex.id,
+                set_number=i + 1,
+                prescribed_reps=backoff.reps,
+                prescribed_load_lb=backoff.weight_lb,
+                is_warmup=False,
+                is_backoff=True,
+                fatigue_drop_pct=backoff.drop_pct,
+            )
+            session.add(pres)
+            session.flush()
+            prescription_ids.append(pres.id)
+
+        session.commit()
+        return {
+            "generated": True,
+            "prescription_ids": prescription_ids,
+            "backoff_count": len(backoffs),
+            "backoffs": [
+                {
+                    "weight_lb": b.weight_lb,
+                    "reps": b.reps,
+                    "rpe": b.rpe,
+                    "drop_pct": b.drop_pct,
+                    "notes": b.notes,
+                }
+                for b in backoffs
+            ],
+        }
+
+    except Exception:
+        session.rollback()
+        raise HTTPException(status_code=500, detail="Failed to generate back-off sets")
     finally:
         session.close()
 
