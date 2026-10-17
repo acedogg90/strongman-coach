@@ -5,10 +5,20 @@ Covers:
 - Back-off weight calculations matching the RTS fatigue-percent table
 - Drop percentage defaults per block phase
 - Edge cases (low weights, deload phase, series generation)
+- Integration: API endpoints store warm-up and back-off prescriptions in DB
 """
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
 
+from app.database import (
+    Base,
+    Prescription,
+    get_engine,
+    init_db,
+    migrate_from_training_entry,
+)
 from app.strength.warmup_backoff import (
     BAR_WEIGHT_LB,
     RTS_DROP_TABLE,
@@ -19,6 +29,59 @@ from app.strength.warmup_backoff import (
     generate_warmups,
     get_default_drop_pct,
 )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def db_url(tmp_path):
+    """Provide a file-based SQLite database URL for each test."""
+    db_file = tmp_path / "test_wb.db"
+    return f"sqlite:///{db_file}"
+
+
+@pytest.fixture()
+def warmup_client(db_url):
+    """Create a test client with a seeded DB for warm-up/back-off integration tests."""
+    import app.database as db_mod
+
+    db_mod._engine = None
+    db_mod._session_factory = None
+
+    init_db(db_url)
+
+    # Seed TrainingEntry and migrate
+    factory = sessionmaker(bind=get_engine(db_url))
+    session = factory()
+
+    session.execute(text("""
+        CREATE TABLE IF NOT EXISTS TrainingEntry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date DATE,
+            exercise_name TEXT,
+            weight REAL,
+            reps INTEGER,
+            sets INTEGER,
+            notes TEXT
+        )
+    """))
+    session.execute(text("""
+        INSERT INTO TrainingEntry (date, exercise_name, weight, reps, sets, notes)
+        VALUES ('2024-01-15', 'Bench Press', 225.0, 5, 3, 'Test notes')
+    """))
+    session.commit()
+    session.close()
+
+    migrate_from_training_entry(db_url)
+
+    from app.routes import app
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as c:
+        yield c
 
 
 # ---------------------------------------------------------------------------
@@ -282,3 +345,240 @@ class TestCalculateBackoffSeries:
         )
         for s in series:
             assert s.exercise == "Bench Press"
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: API endpoints store warm-up and back-off prescriptions
+# ---------------------------------------------------------------------------
+
+
+class TestWarmupIntegration:
+    """Integration tests: POST /warmups stores prescriptions in the database."""
+
+    def test_warmup_endpoint_returns_200(self, warmup_client):
+        """POST /warmups should succeed and return generated warm-ups."""
+        resp = warmup_client.post("/warmups", json={
+            "exercise_name": "Back Squat",
+            "top_set_weight": 300.0,
+            "reps": 3,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["generated"] is True
+        assert data["warmup_count"] >= 1
+
+    def test_warmup_creates_prescriptions_in_db(self, warmup_client, db_url):
+        """Warm-up prescriptions are stored with is_warmup=True."""
+        warmup_client.post("/warmups", json={
+            "exercise_name": "Deadlift",
+            "top_set_weight": 405.0,
+            "reps": 3,
+        })
+
+        # Verify prescriptions exist in DB
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        warmup_pres = session.query(Prescription).filter_by(
+            is_warmup=True, is_backoff=False
+        ).all()
+        session.close()
+
+        assert len(warmup_pres) >= 1
+        for pres in warmup_pres:
+            assert pres.is_warmup is True
+            assert pres.is_backoff is False
+            assert pres.prescribed_load_lb > 0
+
+    def test_warmup_prescription_loads_match_progression(self, warmup_client, db_url):
+        """Warm-up prescription loads follow bar → 40% → 60% → 80% progression."""
+        warmup_client.post("/warmups", json={
+            "exercise_name": "Bench Press",
+            "top_set_weight": 300.0,
+            "reps": 3,
+            "plate_increment": 2.5,
+        })
+
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        warmup_pres = session.query(Prescription).filter_by(
+            is_warmup=True, is_backoff=False
+        ).order_by(Prescription.set_number).all()
+        session.close()
+
+        loads = [p.prescribed_load_lb for p in warmup_pres]
+        # First should be bar weight
+        assert loads[0] == 45.0
+        # Should be ascending
+        for i in range(1, len(loads)):
+            assert loads[i] > loads[i - 1]
+
+    def test_warmup_prescription_reps_stored(self, warmup_client, db_url):
+        """Warm-up prescriptions store the correct rep count."""
+        warmup_client.post("/warmups", json={
+            "exercise_name": "Overhead Press",
+            "top_set_weight": 185.0,
+            "reps": 5,
+        })
+
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        warmup_pres = session.query(Prescription).filter_by(
+            is_warmup=True, is_backoff=False
+        ).all()
+        session.close()
+
+        for pres in warmup_pres:
+            assert pres.prescribed_reps == 5
+
+
+class TestBackoffIntegration:
+    """Integration tests: POST /backoffs stores prescriptions in the database."""
+
+    def test_backoff_endpoint_returns_200(self, warmup_client):
+        """POST /backoffs should succeed and return generated back-offs."""
+        resp = warmup_client.post("/backoffs", json={
+            "exercise_name": "Back Squat",
+            "top_set_weight": 300.0,
+            "reps": 5,
+            "drop_pct": 5.0,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["generated"] is True
+        assert data["backoff_count"] >= 1
+
+    def test_backoff_creates_prescriptions_in_db(self, warmup_client, db_url):
+        """Back-off prescriptions are stored with is_backoff=True."""
+        warmup_client.post("/backoffs", json={
+            "exercise_name": "Deadlift",
+            "top_set_weight": 405.0,
+            "reps": 5,
+            "drop_pct": 5.0,
+        })
+
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        backoff_pres = session.query(Prescription).filter_by(
+            is_warmup=False, is_backoff=True
+        ).all()
+        session.close()
+
+        assert len(backoff_pres) >= 1
+        for pres in backoff_pres:
+            assert pres.is_backoff is True
+            assert pres.is_warmup is False
+            assert pres.fatigue_drop_pct > 0
+
+    def test_backoff_prescription_weight_calculation(self, warmup_client, db_url):
+        """Back-off prescription weights match top_set × (1 - drop_pct/100)."""
+        warmup_client.post("/backoffs", json={
+            "exercise_name": "Bench Press",
+            "top_set_weight": 300.0,
+            "reps": 5,
+            "drop_pct": 5.0,
+            "max_sets": 3,
+        })
+
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        backoff_pres = session.query(Prescription).filter_by(
+            is_warmup=False, is_backoff=True
+        ).order_by(Prescription.set_number).all()
+        session.close()
+
+        # First back-off: 300 × (1 - 0.05) = 285
+        assert backoff_pres[0].prescribed_load_lb == pytest.approx(285.0, abs=0.5)
+        # Second back-off: 300 × (1 - 0.10) = 270
+        assert backoff_pres[1].prescribed_load_lb == pytest.approx(270.0, abs=0.5)
+        # Third back-off: 300 × (1 - 0.15) = 255
+        assert backoff_pres[2].prescribed_load_lb == pytest.approx(255.0, abs=0.5)
+
+    def test_backoff_fatigue_drop_pct_stored(self, warmup_client, db_url):
+        """Back-off prescriptions store the correct fatigue_drop_pct."""
+        warmup_client.post("/backoffs", json={
+            "exercise_name": "Squat",
+            "top_set_weight": 315.0,
+            "reps": 5,
+            "drop_pct": 6.0,
+            "max_sets": 2,
+        })
+
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        backoff_pres = session.query(Prescription).filter_by(
+            is_warmup=False, is_backoff=True
+        ).order_by(Prescription.set_number).all()
+        session.close()
+
+        # First: 6%, second: 12%
+        assert backoff_pres[0].fatigue_drop_pct == pytest.approx(6.0, abs=0.1)
+        assert backoff_pres[1].fatigue_drop_pct == pytest.approx(12.0, abs=0.1)
+
+    def test_backoff_with_phase_uses_default_drop(self, warmup_client, db_url):
+        """When phase is provided, default drop percentage is used."""
+        warmup_client.post("/backoffs", json={
+            "exercise_name": "Deadlift",
+            "top_set_weight": 405.0,
+            "reps": 5,
+            "phase": "intensification",
+            "max_sets": 1,
+        })
+
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        backoff_pres = session.query(Prescription).filter_by(
+            is_warmup=False, is_backoff=True
+        ).all()
+        session.close()
+
+        # Intensification default drop is 4.5%
+        assert backoff_pres[0].fatigue_drop_pct == pytest.approx(4.5, abs=0.1)
+        # 405 × (1 - 0.045) = 387.225
+        assert backoff_pres[0].prescribed_load_lb == pytest.approx(387.2, abs=0.5)
+
+    def test_backoff_stores_reps(self, warmup_client, db_url):
+        """Back-off prescriptions store the correct rep count."""
+        warmup_client.post("/backoffs", json={
+            "exercise_name": "Bench Press",
+            "top_set_weight": 225.0,
+            "reps": 8,
+            "drop_pct": 5.0,
+            "max_sets": 1,
+        })
+
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        backoff_pres = session.query(Prescription).filter_by(
+            is_warmup=False, is_backoff=True
+        ).all()
+        session.close()
+
+        assert backoff_pres[0].prescribed_reps == 8
+
+    def test_warmup_and_backoff_coexist(self, warmup_client, db_url):
+        """Warm-up and back-off prescriptions can coexist in the same session."""
+        warmup_client.post("/warmups", json={
+            "exercise_name": "Squat",
+            "top_set_weight": 300.0,
+            "reps": 3,
+        })
+        warmup_client.post("/backoffs", json={
+            "exercise_name": "Squat",
+            "top_set_weight": 300.0,
+            "reps": 5,
+            "drop_pct": 5.0,
+            "max_sets": 2,
+        })
+
+        factory = sessionmaker(bind=get_engine(db_url))
+        session = factory()
+        warmup_count = session.query(Prescription).filter_by(
+            is_warmup=True, is_backoff=False
+        ).count()
+        backoff_count = session.query(Prescription).filter_by(
+            is_warmup=False, is_backoff=True
+        ).count()
+        session.close()
+
+        assert warmup_count >= 1
+        assert backoff_count >= 1
