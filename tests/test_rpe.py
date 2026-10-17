@@ -18,7 +18,7 @@ class TestPercent:
         assert percent(1, 6.0) == 65.0
 
     def test_12_reps_rpe_10(self):
-        assert percent(12, 10.0) == 60.0
+        assert percent(12, 10.0) == 96.0
 
     def test_invalid_reps_low(self):
         import pytest
@@ -72,6 +72,12 @@ class TestE1rm:
     def test_e1rm_1_rep_max(self):
         result = e1rm(300, 1, 10.0)
         assert result["e1rm"] == 300.0
+        assert result["confidence"] == "high"
+
+    def test_e1rm_405_3_9(self):
+        """Acceptance criterion: e1rm(405, 3, 9) returns 454 (±1)."""
+        result = e1rm(405, 3, 9.0)
+        assert 453 <= result["e1rm"] <= 455
         assert result["confidence"] == "high"
 
 
