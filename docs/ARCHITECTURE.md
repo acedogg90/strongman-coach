@@ -47,7 +47,6 @@ All tables use `INTEGER PRIMARY KEY AUTOINCREMENT`. Timestamps are `DATETIME` (U
 | height_cm | REAL | |
 | age | INTEGER | |
 | training_age_months | INTEGER | |
-| target_weight_class | VARCHAR(20) | FK → settings (see §4.14) |
 | units | VARCHAR(4) | DEFAULT 'lb', CHECK IN ('lb','kg') |
 | plate_increment_lb | REAL | DEFAULT 2.5 |
 | dumbbell_max_lb | INTEGER | DEFAULT 120 |
@@ -209,11 +208,11 @@ All tables use `INTEGER PRIMARY KEY AUTOINCREMENT`. Timestamps are `DATETIME` (U
 |--------|------|-------------|
 | id | INTEGER | PK |
 | athlete_id | INTEGER | FK → athlete.id, NOT NULL |
-| key | VARCHAR(50) | NOT NULL, UNIQUE per athlete |
+| key | VARCHAR(50) | NOT NULL |
 | value | TEXT | NOT NULL |
 | updated_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
-*Keys: `units`, `weight_class`, `safety_notice_seen` (BOOLEAN), `benchmarks` (JSON of ASM 2025 values).*
+*Unique constraint on (athlete_id, key). Keys: `units`, `weight_class`, `safety_notice_seen`, `benchmarks` (JSON of ASM 2025 values).*
 
 ---
 
@@ -221,25 +220,25 @@ All tables use `INTEGER PRIMARY KEY AUTOINCREMENT`. Timestamps are `DATETIME` (U
 
 ### 5.1 Source: Training Tracker
 
-Existing schema stores lifts in a `TrainingEntry` table with columns roughly: `date`, `exercise_name`, `weight`, `reps`, `sets`, `notes`.
+Existing schema stores lifts in a `TrainingEntry` table with columns: `id`, `date` (DATE), `exercise_name` (TEXT), `weight` (REAL), `reps` (INTEGER), `sets` (INTEGER), `notes` (TEXT).
 
 ### 5.2 Strategy
 
-1. **Seed reference tables** — `exercise`, `equipment`, `athlete`, `settings` populated from defaults and any existing config.
-2. **Create program skeleton** — A single "Imported" program with one block, one cycle, and one session per distinct date in `TrainingEntry`.
+1. **Seed reference tables** — `exercise` (from distinct `exercise_name` values), `equipment` (Crunch Fitness defaults), `athlete` (single row), `settings` (defaults per ADR-0002, ADR-0003).
+2. **Create program skeleton** — A single "Imported History" program with one block, one cycle, and one `session` per distinct `date` in `TrainingEntry`.
 3. **Map each TrainingEntry to prescriptions and set_logs**:
-   - One `session` per `(date, exercise_name)` pair.
-   - One `prescription` per set (set_number = 1..N).
-   - One `set_log` per prescription: `actual_load_lb = weight`, `actual_reps = reps`, `rpe = NULL`, `confidence = 'low'`.
-   - `e1rm_lb` backfilled via Epley (`weight × (1 + reps/30)`) since RPE is unknown.
+   - One `prescription` per set (set_number = 1..N where N = `sets` column).
+   - One `set_log` per prescription: `actual_load_lb = weight`, `actual_reps = reps`, `rpe = NULL`, `confidence = 'low'` (RPE unknown).
+   - `e1rm_lb` backfilled via Epley formula: `weight × (1 + reps/30)`.
+   - `notes` carried through to `set_log.note`.
 4. **Backfill PRs** — For each exercise, record highest `e1rm_lb` as category `e1rm`.
 5. **Idempotency** — Migration checks `migration_version` in `settings`; skips if already run.
 
 ### 5.3 Data-loss safeguards
 
 - Original `TrainingEntry` is **renamed** to `TrainingEntry_archive`, not dropped.
-- Migration runs in a transaction; rollback on any error.
-- Post-migration: count of `set_log` rows ≥ count of original `TrainingEntry` rows.
+- Migration runs in a single transaction; rollback on any error.
+- Post-migration assertion: count of `set_log` rows ≥ count of original `TrainingEntry` rows.
 
 ---
 
@@ -249,60 +248,60 @@ All routes under `/api/v1/`. JSON request/response. No auth (local-only app).
 
 ### 6.1 Athlete & Settings
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/athlete` | Current athlete profile |
-| PATCH | `/athlete` | Update profile fields |
-| GET | `/bodyweight` | Bodyweight log (paginated) |
-| POST | `/bodyweight` | Add bodyweight entry |
-| GET | `/settings` | All settings key-value pairs |
-| PATCH | `/settings` | Update one or more settings |
-| GET | `/equipment` | Equipment inventory with availability |
-| PATCH | `/equipment` | Toggle equipment availability |
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| GET | `/athlete` | — | `{name, height_cm, age, training_age_months, units, plate_increment_lb, dumbbell_max_lb}` |
+| PATCH | `/athlete` | `{name?, height_cm?, age?, training_age_months?, units?, plate_increment_lb?, dumbbell_max_lb?}` | updated athlete |
+| GET | `/bodyweight` | — | `[{id, weight_lb, date, notes}, ...]` |
+| POST | `/bodyweight` | `{weight_lb, date, notes?}` | created entry |
+| GET | `/settings` | — | `[{key, value}, ...]` |
+| PATCH | `/settings` | `{key, value}` | updated setting |
+| GET | `/equipment` | — | `[{id, name, available, category}, ...]` |
+| PATCH | `/equipment` | `{id, available}` | updated equipment |
 
 ### 6.2 Program & Planning
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/programs` | List programs |
-| POST | `/programs` | Generate new program from template |
-| GET | `/programs/{id}/preview` | Next 5 sessions preview |
-| GET | `/sessions/{id}` | Session detail with prescriptions |
-| PATCH | `/sessions/{id}/readiness` | Submit readiness scores |
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| GET | `/programs` | — | `[{id, name, phase, start_date, is_active}, ...]` |
+| POST | `/programs` | `{phase, start_date}` | created program with generated blocks/cycles/sessions |
+| GET | `/programs/{id}/preview` | — | next 5 sessions with prescriptions |
+| GET | `/sessions/{id}` | — | session with all prescriptions |
+| PATCH | `/sessions/{id}/readiness` | `{sleep, soreness, stress}` | updated readiness scores |
 
 ### 6.3 Logging
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/sessions/{id}/set` | Log a set (weight, reps, RPE, pain_flag, note) |
-| POST | `/sessions/{id}/event` | Log an event (load+distance/time/reps) |
-| PATCH | `/sessions/{id}/complete` | Mark session complete; triggers auto-adjustment |
-| GET | `/sessions/{id}/e1rm` | Current session e1RM vs trend |
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| POST | `/sessions/{id}/set` | `{prescription_id, actual_load_lb, actual_reps, rpe?, pain_flag?, note?}` | created set_log with computed e1rm_lb |
+| POST | `/sessions/{id}/event` | `{prescription_id, load_lb?, distance_ft?, time_sec?, reps?, note?}` | created event_log |
+| PATCH | `/sessions/{id}/complete` | — | marks complete, triggers auto-adjustment on next sessions |
+| GET | `/sessions/{id}/e1rm` | — | `{exercise_e1rms: [{exercise, session_e1rm, trend_e1rm}], ...}` |
 
 ### 6.4 Dashboard
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/dashboard/e1rm-trend` | Trend e1RM per main lift over time |
-| GET | `/dashboard/tonnage` | Weekly tonnage per movement pattern |
-| GET | `/dashboard/prs` | All-time PRs |
-| GET | `/dashboard/benchmarks` | Benchmarks table with % of ASM 2025 values |
-| GET | `/dashboard/stalls` | Lifts flagged as stalled |
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| GET | `/dashboard/e1rm-trend` | — | `{exercise, trend_e1rm, bodyweight_multiple, history: [{date, e1rm}]}` |
+| GET | `/dashboard/tonnage` | — | `[{week, pattern, total_tonnage_lb}, ...]` |
+| GET | `/dashboard/prs` | — | `[{exercise, category, value_lb, reps, date}, ...]` |
+| GET | `/dashboard/benchmarks` | — | `{exercise, athlete_value, benchmark_value, pct_of_benchmark}` |
+| GET | `/dashboard/stalls` | — | `[{exercise, last_improvement_date, cycles_since}, ...]` |
 
 ### 6.5 Export
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/export/csv` | All set_logs as CSV |
-| GET | `/export/json` | All set_logs as JSON |
-| GET | `/export/block-print` | Printable view of current block |
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| GET | `/export/csv` | — | CSV of all set_log + event_log rows |
+| GET | `/export/json` | — | JSON of all set_log + event_log rows |
+| GET | `/export/block-print` | — | HTML printable view of current block |
 
 ### 6.6 Utilities
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/calc/plate` | Plate calculator (load per side) |
-| POST | `/calc/warmup` | Warm-up set calculator |
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| POST | `/calc/plate` | `{load_lb, bar_weight_lb}` | `{per_side, plates: [lb, count]}` |
+| POST | `/calc/warmup` | `{working_load_lb, sets}` | `[{load_lb, reps}, ...]` |
 
 ---
 
@@ -317,11 +316,17 @@ All routes under `/api/v1/`. JSON request/response. No auth (local-only app).
 ### 7.2 IndexedDB Schema
 
 ```
-Store: sync_queue
-  keyPath: id (auto-increment)
-  indexes: [session_id, type]
-  fields: { type: 'set'|'event'|'readiness', payload: object,
-            status: 'pending'|'synced'|'failed', created_at: timestamp }
+DB: strongman-coach
+  Store: sync_queue
+    keyPath: id (auto-increment)
+    indexes: [session_id, type]
+    fields: { type: 'set'|'event'|'readiness',
+              payload: object,
+              status: 'pending'|'synced'|'failed',
+              created_at: timestamp }
+  Store: cached_sessions
+    keyPath: session_id
+    fields: { session_id, prescriptions: [], set_logs: [] }
 ```
 
 When offline, every logged set/event is written to `sync_queue`. The UI reads from IndexedDB immediately so the user never sees a blank screen.
@@ -348,10 +353,10 @@ strongman-coach/
 ├── app/
 │   ├── main.py              # FastAPI app factory
 │   ├── db/                  # models.py, engine.py, seed.py
-│   ├── api/                 # athlete, logging, dashboard, program, export, utils
+│   ├── api/                 # athlete.py, logging.py, dashboard.py, program.py, export.py, utils.py
 │   ├── strength/            # rpe.py, progress.py, plan.py, program.py
 │   └── migration/           # migrate.py (TrainingEntry → new schema)
-├── tests/                   # test_rpe, test_progress, test_plan, test_program, test_api
+├── tests/                   # test_rpe.py, test_progress.py, test_plan.py, test_program.py, test_api.py
 ├── frontend/
 │   ├── index.html           # app shell
 │   ├── css/                 # styles
@@ -405,8 +410,8 @@ pytest
 1. The existing Training Tracker uses a single `TrainingEntry` table with `date`, `exercise_name`, `weight`, `reps`, `sets` columns. If the actual schema differs, the migration script will need adjustment.
 2. Only one athlete is supported (single-user app). Multi-athlete support is out of scope.
 3. The FastAPI server and PWA client communicate over the same LAN; no internet required.
-4. Plate increment defaults to 2.5 lb (Decision #2: lb default).
-5. Weight classes follow SMC kg classes (Decision #3).
+4. Plate increment defaults to 2.5 lb (ADR-0002: lb default).
+5. Weight classes follow SMC kg classes (ADR-0003).
 
 ### Open Questions (Owner should confirm)
 
@@ -419,4 +424,6 @@ pytest
 
 ## 12. Referenced Decisions
 
-See `docs/adr/0001-offline-first.md`, `docs/adr/0002-lb-default.md`, `docs/adr/0003-smc-weight-classes.md`.
+- [ADR-0001](adr/0001-offline-first.md) — Offline-first PWA with IndexedDB sync queue
+- [ADR-0002](adr/0002-lb-default.md) — Pounds (lb) as default units
+- [ADR-0003](adr/0003-smc-weight-classes.md) — SMC weight classes for amateur and masters
