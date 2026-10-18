@@ -1061,3 +1061,261 @@ def get_sessions(
         raise HTTPException(status_code=500, detail="Failed to get sessions")
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Settings API
+# ---------------------------------------------------------------------------
+
+class SettingRequest(BaseModel):
+    """Request to update a setting."""
+    key: str
+    value: str
+
+
+class SettingsResponse(BaseModel):
+    """Response for settings."""
+    key: str
+    value: str
+
+
+class AthleteUpdate(BaseModel):
+    """Request to update athlete profile."""
+    name: Optional[str] = None
+    height_cm: Optional[float] = None
+    age: Optional[int] = None
+    training_age_months: Optional[int] = None
+    units: Optional[str] = None
+    plate_increment_lb: Optional[float] = None
+    dumbbell_max_lb: Optional[int] = None
+
+
+class BodyweightEntry(BaseModel):
+    """Request to log bodyweight."""
+    weight_lb: float
+    date: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class BodyweightResponse(BaseModel):
+    """Response for bodyweight entry."""
+    id: int
+    weight_lb: float
+    date: str
+    notes: Optional[str] = None
+
+
+class ImportRequest(BaseModel):
+    """Request to import CSV data."""
+    csv_data: str
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Get all settings for the athlete."""
+    from app.strength.settings import load_all_settings, ensure_defaults
+    db = _get_session()
+    try:
+        ensure_defaults(db)
+        settings = load_all_settings(db)
+        return [{"key": k, "value": v} for k, v in settings.items()]
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to get settings")
+    finally:
+        db.close()
+
+
+@app.patch("/api/settings")
+def update_setting(req: SettingRequest):
+    """Update a single setting."""
+    from app.strength.settings import set_setting
+    db = _get_session()
+    try:
+        row = set_setting(db, req.key, req.value)
+        db.commit()
+        return {"key": row.key, "value": row.value}
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update setting")
+    finally:
+        db.close()
+
+
+@app.get("/api/athlete")
+def get_athlete():
+    """Get athlete profile."""
+    from app.database import Athlete
+    db = _get_session()
+    try:
+        athlete = db.query(Athlete).first()
+        if not athlete:
+            raise HTTPException(status_code=404, detail="No athlete found")
+        return {
+            "id": athlete.id,
+            "name": athlete.name,
+            "height_cm": athlete.height_cm,
+            "age": athlete.age,
+            "training_age_months": athlete.training_age_months,
+            "units": athlete.units,
+            "plate_increment_lb": athlete.plate_increment_lb,
+            "dumbbell_max_lb": athlete.dumbbell_max_lb,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to get athlete")
+    finally:
+        db.close()
+
+
+@app.patch("/api/athlete")
+def update_athlete(req: AthleteUpdate):
+    """Update athlete profile."""
+    from app.database import Athlete
+    db = _get_session()
+    try:
+        athlete = db.query(Athlete).first()
+        if not athlete:
+            raise HTTPException(status_code=404, detail="No athlete found")
+
+        if req.name is not None:
+            athlete.name = req.name
+        if req.height_cm is not None:
+            athlete.height_cm = req.height_cm
+        if req.age is not None:
+            athlete.age = req.age
+        if req.training_age_months is not None:
+            athlete.training_age_months = req.training_age_months
+        if req.units is not None:
+            athlete.units = req.units
+        if req.plate_increment_lb is not None:
+            athlete.plate_increment_lb = req.plate_increment_lb
+        if req.dumbbell_max_lb is not None:
+            athlete.dumbbell_max_lb = req.dumbbell_max_lb
+
+        db.commit()
+        return {
+            "id": athlete.id,
+            "name": athlete.name,
+            "height_cm": athlete.height_cm,
+            "age": athlete.age,
+            "training_age_months": athlete.training_age_months,
+            "units": athlete.units,
+            "plate_increment_lb": athlete.plate_increment_lb,
+            "dumbbell_max_lb": athlete.dumbbell_max_lb,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update athlete")
+    finally:
+        db.close()
+
+
+@app.get("/api/bodyweight")
+def get_bodyweight():
+    """Get all bodyweight entries."""
+    from app.database import Bodyweight, Athlete
+    db = _get_session()
+    try:
+        athlete = db.query(Athlete).first()
+        if not athlete:
+            raise HTTPException(status_code=404, detail="No athlete found")
+        entries = (
+            db.query(Bodyweight)
+            .filter_by(athlete_id=athlete.id)
+            .order_by(Bodyweight.date.desc())
+            .all()
+        )
+        return [
+            BodyweightResponse(
+                id=e.id,
+                weight_lb=e.weight_lb,
+                date=e.date.isoformat() if e.date else "",
+                notes=e.notes,
+            )
+            for e in entries
+        ]
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to get bodyweight")
+    finally:
+        db.close()
+
+
+@app.post("/api/bodyweight")
+def add_bodyweight(req: BodyweightEntry):
+    """Log a bodyweight entry."""
+    from app.database import Bodyweight, Athlete
+    import datetime as dt
+    db = _get_session()
+    try:
+        athlete = db.query(Athlete).first()
+        if not athlete:
+            raise HTTPException(status_code=404, detail="No athlete found")
+
+        entry_date = dt.date.today()
+        if req.date:
+            try:
+                entry_date = dt.date.fromisoformat(req.date)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format")
+
+        entry = Bodyweight(
+            athlete_id=athlete.id,
+            weight_lb=req.weight_lb,
+            date=entry_date,
+            notes=req.notes,
+        )
+        db.add(entry)
+        db.commit()
+        return BodyweightResponse(
+            id=entry.id,
+            weight_lb=entry.weight_lb,
+            date=entry.date.isoformat(),
+            notes=entry.notes,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to add bodyweight")
+    finally:
+        db.close()
+
+
+@app.get("/api/export/csv")
+def export_csv():
+    """Export all session data as CSV."""
+    from app.strength.settings import export_sessions_csv
+    from fastapi.responses import Response
+    db = _get_session()
+    try:
+        csv_data = export_sessions_csv(db)
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=sessions.csv"},
+        )
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to export CSV")
+    finally:
+        db.close()
+
+
+@app.post("/api/import/csv")
+def import_csv(req: ImportRequest):
+    """Import session data from CSV backup."""
+    from app.strength.settings import import_sessions_csv
+    db = _get_session()
+    try:
+        result = import_sessions_csv(db, req.csv_data)
+        db.commit()
+        return result
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to import CSV")
+    finally:
+        db.close()
