@@ -1141,6 +1141,75 @@ def update_setting(req: SettingRequest):
         db.close()
 
 
+@app.patch("/api/settings/bulk")
+def bulk_update_settings(req: dict):
+    """Update multiple settings at once."""
+    from app.strength.settings import save_all_settings, VALID_KEYS
+    db = _get_session()
+    try:
+        # Filter to valid keys only
+        valid_updates = {k: v for k, v in req.items() if k in VALID_KEYS}
+        save_all_settings(db, valid_updates)
+        db.commit()
+        return {"updated": len(valid_updates)}
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update settings")
+    finally:
+        db.close()
+
+
+@app.get("/api/settings/export/csv")
+def export_settings_csv():
+    """Export all settings as CSV."""
+    from app.strength.settings import load_all_settings, ensure_defaults
+    from fastapi.responses import Response
+    import csv
+    import io
+    db = _get_session()
+    try:
+        ensure_defaults(db)
+        settings = load_all_settings(db)
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=["key", "value"])
+        writer.writeheader()
+        for key, value in settings.items():
+            writer.writerow({"key": key, "value": value})
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=settings.csv"},
+        )
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to export settings")
+    finally:
+        db.close()
+
+
+@app.post("/api/settings/import/csv")
+def import_settings_csv(req: ImportRequest):
+    """Import settings from CSV backup."""
+    from app.strength.settings import save_all_settings, VALID_KEYS
+    import csv
+    import io
+    db = _get_session()
+    try:
+        reader = csv.DictReader(io.StringIO(req.csv_data))
+        settings = {}
+        for row in reader:
+            key = row.get("key", "").strip()
+            if key in VALID_KEYS:
+                settings[key] = row.get("value", "").strip()
+        save_all_settings(db, settings)
+        db.commit()
+        return {"imported": len(settings)}
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to import settings")
+    finally:
+        db.close()
+
+
 @app.get("/api/athlete")
 def get_athlete():
     """Get athlete profile."""

@@ -426,8 +426,19 @@ def migrate_from_training_entry(db_url: str = "sqlite:///strongman_coach.db") ->
 
         # --- Check if TrainingEntry exists ---
         if not _table_exists(session, "TrainingEntry"):
-            # Nothing to migrate – mark as done
+            # Nothing to migrate – seed athlete if needed and mark as done
+            athlete = session.query(Athlete).first()
+            if not athlete:
+                athlete = Athlete(
+                    name="Athlete",
+                    units="lb",
+                    plate_increment_lb=2.5,
+                    dumbbell_max_lb=120,
+                )
+                session.add(athlete)
+                session.flush()
             if _table_exists(session, "settings"):
+                _seed_settings(session, athlete.id)
                 _set_migration_flag(session)
             stats["migrated"] = True
             return stats
