@@ -16,8 +16,11 @@ from sqlalchemy import text
 
 from app.database import (
     Base,
+    Block,
+    Cycle,
     Exercise,
     Prescription,
+    Program,
     Session as DBSession,
     SetLog,
     get_engine,
@@ -32,6 +35,7 @@ from app.strength.warmup_backoff import (
     calculate_backoff_series,
     get_default_drop_pct,
 )
+from app.strength.adjustment_rules import evaluate_adjustments
 
 app = FastAPI(title="Strongman Coach")
 
@@ -96,6 +100,77 @@ class BackoffRequest(BaseModel):
     phase: Optional[str] = None
     notes: Optional[str] = None
     max_sets: int = 6
+
+
+class SessionCreate(BaseModel):
+    """Request to create a new session."""
+    day_label: str  # A, B, C, or D
+    scheduled_date: Optional[str] = None
+    readiness_sleep: Optional[int] = None
+    readiness_soreness: Optional[int] = None
+    readiness_stress: Optional[int] = None
+
+
+class SetLogRequest(BaseModel):
+    """Request to log a set."""
+    exercise_name: str
+    weight: float
+    reps: int
+    rpe: Optional[float] = None
+    set_type: str = "top"  # warmup, top, backoff, apre
+    pain_flag: bool = False
+    note: Optional[str] = None
+
+
+class SessionResponse(BaseModel):
+    """Response for a session."""
+    id: int
+    cycle_id: int
+    day_label: str
+    scheduled_date: Optional[str] = None
+    actual_date: Optional[str] = None
+    status: str
+    readiness_sleep: Optional[int] = None
+    readiness_soreness: Optional[int] = None
+    readiness_stress: Optional[int] = None
+    created_at: Optional[str] = None
+    block_phase: Optional[str] = None
+
+
+class SessionCompleteRequest(BaseModel):
+    """Request to complete a session."""
+    readiness_sleep: Optional[int] = None
+    readiness_soreness: Optional[int] = None
+    readiness_stress: Optional[int] = None
+
+
+class SetLogResponse(BaseModel):
+    """Response for a logged set."""
+    id: int
+    prescription_id: int
+    exercise_name: str
+    actual_load_lb: float
+    actual_reps: int
+    rpe: Optional[float] = None
+    e1rm_lb: Optional[float] = None
+    confidence: str
+    pain_flag: bool
+    set_type: str
+    note: Optional[str] = None
+    logged_at: Optional[str] = None
+
+
+class SessionCompleteResponse(BaseModel):
+    """Response when completing a session."""
+    session_id: int
+    status: str
+    adjustments: list[dict] = []
+    skip_backoffs: bool = False
+    allow_extra_set: bool = False
+    early_deload: bool = False
+    pain_flags: list[dict] = []
+    next_e1rm_adjustment: float = 0.0
+    suggested_variation_swap: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -570,3 +645,419 @@ def delete_entry(entry_id: int):
         raise HTTPException(status_code=500, detail="Failed to delete entry")
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/sessions \u2013 Create a new session
+# ---------------------------------------------------------------------------
+
+@app.post("/api/sessions")
+def create_session(req: SessionCreate):
+    """Create a new session with the correct day type and block phase."""
+    db = _get_session()
+    try:
+        # Validate day_label
+        if req.day_label.upper() not in ("A", "B", "C", "D"):
+            raise HTTPException(status_code=400, detail="day_label must be A, B, C, or D")
+
+        today = datetime.date.today()
+        scheduled = req.scheduled_date
+        if scheduled:
+            try:
+                scheduled = datetime.date.fromisoformat(scheduled)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid scheduled_date format")
+        else:
+            scheduled = today
+
+        # Find active program
+        program = db.query(Program).filter_by(is_active=True).first()
+        if not program:
+            program = Program(
+                athlete_id=1,
+                name="Default Program",
+                phase="accumulation",
+                start_date=today,
+                is_active=True,
+            )
+            db.add(program)
+            db.flush()
+
+        # Find or create block for this program
+        block = db.query(Block).filter_by(program_id=program.id).first()
+        if not block:
+            block = Block(
+                program_id=program.id,
+                block_number=1,
+                start_date=today,
+            )
+            db.add(block)
+            db.flush()
+
+        # Find or create cycle for this block
+        cycle = db.query(Cycle).filter_by(block_id=block.id).first()
+        if not cycle:
+            cycle = Cycle(
+                block_id=block.id,
+                cycle_number=1,
+                start_date=today,
+            )
+            db.add(cycle)
+            db.flush()
+
+        # Create the session
+        new_session = DBSession(
+            cycle_id=cycle.id,
+            day_label=req.day_label.upper(),
+            scheduled_date=scheduled,
+            actual_date=scheduled,
+            status="in_progress",
+            readiness_sleep=req.readiness_sleep,
+            readiness_soreness=req.readiness_soreness,
+            readiness_stress=req.readiness_stress,
+        )
+        db.add(new_session)
+        db.flush()
+
+        # Determine block phase from program
+        block_phase = program.phase
+
+        db.commit()
+
+        return SessionResponse(
+            id=new_session.id,
+            cycle_id=new_session.cycle_id,
+            day_label=new_session.day_label,
+            scheduled_date=str(new_session.scheduled_date),
+            actual_date=str(new_session.actual_date) if new_session.actual_date else None,
+            status=new_session.status,
+            readiness_sleep=new_session.readiness_sleep,
+            readiness_soreness=new_session.readiness_soreness,
+            readiness_stress=new_session.readiness_stress,
+            created_at=str(new_session.created_at) if new_session.created_at else None,
+            block_phase=block_phase,
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create session")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/sessions/{id}/sets \u2013 Log a set for a session
+# ---------------------------------------------------------------------------
+
+@app.post("/api/sessions/{session_id}/sets")
+def log_set(session_id: int, req: SetLogRequest):
+    """Log a set with exercise, weight, reps, rpe, set_type."""
+    db = _get_session()
+    try:
+        # Validate session exists and is in_progress
+        sess = db.query(DBSession).filter_by(id=session_id).first()
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if sess.status != "in_progress":
+            raise HTTPException(status_code=400, detail="Session is not in progress")
+
+        # Validate set_type
+        valid_set_types = ("warmup", "top", "backoff", "apre")
+        if req.set_type not in valid_set_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"set_type must be one of: {', '.join(valid_set_types)}",
+            )
+
+        # Ensure exercise exists
+        ex = db.query(Exercise).filter_by(name=req.exercise_name).first()
+        if not ex:
+            ex = Exercise(name=req.exercise_name, role="accessory", metric_type="load_reps")
+            db.add(ex)
+            db.flush()
+
+        # Create prescription for this set
+        pres = Prescription(
+            session_id=sess.id,
+            exercise_id=ex.id,
+            set_number=1,
+            prescribed_reps=req.reps,
+            prescribed_load_lb=req.weight,
+            prescribed_rpe=req.rpe,
+        )
+        db.add(pres)
+        db.flush()
+
+        # Calculate e1RM using RPE engine if available
+        e1rm_val = None
+        confidence = "low"
+        try:
+            if req.rpe is not None and req.rpe >= 7.0 and req.reps <= 8:
+                from app.strength.rpe import e1rm as calc_e1rm
+                result = calc_e1rm(req.weight, req.reps, req.rpe)
+                if isinstance(result, dict):
+                    e1rm_val = result.get("e1rm")
+                    confidence = result.get("confidence", "high")
+                else:
+                    e1rm_val = float(result)
+                    confidence = "high"
+            elif req.rpe is not None:
+                # Epley fallback for low RPE or high reps
+                e1rm_val = round(req.weight * (1 + req.reps / 30.0), 1)
+                confidence = "low"
+            else:
+                # No RPE, use Epley
+                e1rm_val = round(req.weight * (1 + req.reps / 30.0), 1)
+                confidence = "low"
+        except Exception:
+            # Fallback to Epley on any error
+            e1rm_val = round(req.weight * (1 + req.reps / 30.0), 1)
+            confidence = "low"
+
+        # Create set log
+        slog = SetLog(
+            prescription_id=pres.id,
+            actual_load_lb=req.weight,
+            actual_reps=req.reps,
+            rpe=req.rpe,
+            e1rm_lb=e1rm_val,
+            confidence=confidence,
+            pain_flag=req.pain_flag,
+            set_type=req.set_type,
+            note=req.note,
+        )
+        db.add(slog)
+        db.flush()
+
+        db.commit()
+
+        return SetLogResponse(
+            id=slog.id,
+            prescription_id=slog.prescription_id,
+            exercise_name=req.exercise_name,
+            actual_load_lb=slog.actual_load_lb,
+            actual_reps=slog.actual_reps,
+            rpe=slog.rpe,
+            e1rm_lb=slog.e1rm_lb,
+            confidence=slog.confidence,
+            pain_flag=slog.pain_flag,
+            set_type=slog.set_type,
+            note=slog.note,
+            logged_at=str(slog.logged_at) if slog.logged_at else None,
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to log set")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/sessions/{id}/complete \u2013 Complete a session and run adjustments
+# ---------------------------------------------------------------------------
+
+@app.patch("/api/sessions/{session_id}/complete")
+def complete_session(session_id: int, req: SessionCompleteRequest = None):
+    """Mark a session complete and trigger adjustment rule checks."""
+    db = _get_session()
+    try:
+        sess = db.query(DBSession).filter_by(id=session_id).first()
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if sess.status == "completed":
+            raise HTTPException(status_code=400, detail="Session already completed")
+
+        # Update readiness if provided
+        if req:
+            if req.readiness_sleep is not None:
+                sess.readiness_sleep = req.readiness_sleep
+            if req.readiness_soreness is not None:
+                sess.readiness_soreness = req.readiness_soreness
+            if req.readiness_stress is not None:
+                sess.readiness_stress = req.readiness_stress
+
+        sess.status = "completed"
+        db.flush()
+
+        # Gather data for adjustment evaluation
+        # Get all set logs for this session
+        set_logs = (
+            db.query(SetLog)
+            .join(Prescription, SetLog.prescription_id == Prescription.id)
+            .filter(Prescription.session_id == sess.id)
+            .all()
+        )
+
+        # Find top sets and their RPEs
+        top_sets = [sl for sl in set_logs if sl.set_type == "top"]
+        top_set_rpe = None
+        if top_sets:
+            top_set_rpe = top_sets[0].rpe
+
+        # Get target RPE from prescriptions
+        target_rpe = None
+        prescriptions = db.query(Prescription).filter_by(session_id=sess.id).all()
+        for pres in prescriptions:
+            if pres.prescribed_rpe is not None:
+                target_rpe = pres.prescribed_rpe
+                break
+
+        # Collect pain flags
+        pain_flags = []
+        for sl in set_logs:
+            if sl.pain_flag:
+                ex = db.query(Exercise).filter_by(id=sl.prescription.exercise_id).first()
+                ex_name = ex.name if ex else "unknown"
+                pain_flags.append({"exercise": ex_name, "pain_flag": True})
+
+        # Get e1RM history for the cycle
+        cycle = db.query(Cycle).filter_by(id=sess.cycle_id).first()
+        e1rm_history = []
+        cycles_since_improvement = 0
+        if cycle:
+            # Get all sessions in this block's cycles
+            all_cycles = db.query(Cycle).filter_by(block_id=cycle.block_id).order_by(Cycle.cycle_number).all()
+            for c in all_cycles:
+                c_sessions = db.query(DBSession).filter_by(cycle_id=c.id, status="completed").all()
+                best_e1rm = 0.0
+                for cs in c_sessions:
+                    cs_pres = db.query(Prescription).filter_by(session_id=cs.id).all()
+                    for cp in cs_pres:
+                        cs_logs = db.query(SetLog).filter_by(prescription_id=cp.id).all()
+                        for csl in cs_logs:
+                            if csl.e1rm_lb and csl.e1rm_lb > best_e1rm:
+                                best_e1rm = csl.e1rm_lb
+                if best_e1rm > 0:
+                    e1rm_history.append(best_e1rm)
+
+            # Calculate cycles since improvement
+            if len(e1rm_history) >= 2:
+                latest = e1rm_history[-1]
+                for val in reversed(e1rm_history[:-1]):
+                    if val < latest:
+                        break
+                    cycles_since_improvement += 1
+
+        # Evaluate adjustments
+        adjustments = evaluate_adjustments(
+            top_set_rpe=top_set_rpe,
+            target_rpe=target_rpe,
+            e1rm_history=e1rm_history if e1rm_history else None,
+            cycles_since_improvement=cycles_since_improvement,
+            pain_flags=pain_flags if pain_flags else None,
+        )
+
+        db.commit()
+
+        return SessionCompleteResponse(
+            session_id=sess.id,
+            status=sess.status,
+            adjustments=[
+                {
+                    "rule_type": a.rule_type.value,
+                    "triggered": a.triggered,
+                    "message": a.message,
+                    "details": a.details,
+                }
+                for a in adjustments.adjustments
+            ],
+            skip_backoffs=adjustments.skip_backoffs,
+            allow_extra_set=adjustments.allow_extra_set,
+            early_deload=adjustments.early_deload,
+            pain_flags=[{"exercise": name} for name in adjustments.pain_flags],
+            next_e1rm_adjustment=adjustments.next_e1rm_adjustment,
+            suggested_variation_swap=adjustments.suggested_variation_swap,
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to complete session")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sessions \u2013 Get session history with filters
+# ---------------------------------------------------------------------------
+
+@app.get("/api/sessions")
+def get_sessions(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    day_type: Optional[str] = None,
+    block_phase: Optional[str] = None,
+):
+    """Get session history filtered by date range, day type, or block phase."""
+    db = _get_session()
+    try:
+        query = db.query(DBSession)
+
+        # Filter by date range
+        if date_from:
+            try:
+                query = query.filter(DBSession.scheduled_date >= datetime.date.fromisoformat(date_from))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date_from format")
+        if date_to:
+            try:
+                query = query.filter(DBSession.scheduled_date <= datetime.date.fromisoformat(date_to))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date_to format")
+
+        # Filter by day type
+        if day_type:
+            query = query.filter(DBSession.day_label == day_type.upper())
+
+        # Filter by block phase (join through cycle -> block -> program)
+        if block_phase:
+            query = (
+                query
+                .join(Cycle, DBSession.cycle_id == Cycle.id)
+                .join(Block, Cycle.block_id == Block.id)
+                .join(Program, Block.program_id == Program.id)
+                .filter(Program.phase == block_phase)
+            )
+
+        sessions = query.order_by(DBSession.scheduled_date.desc()).all()
+
+        result = []
+        for sess in sessions:
+            # Get block phase
+            cycle = db.query(Cycle).filter_by(id=sess.cycle_id).first()
+            block_phase_val = None
+            if cycle:
+                block = db.query(Block).filter_by(id=cycle.block_id).first()
+                if block:
+                    program = db.query(Program).filter_by(id=block.program_id).first()
+                    if program:
+                        block_phase_val = program.phase
+
+            result.append(SessionResponse(
+                id=sess.id,
+                cycle_id=sess.cycle_id,
+                day_label=sess.day_label,
+                scheduled_date=str(sess.scheduled_date),
+                actual_date=str(sess.actual_date) if sess.actual_date else None,
+                status=sess.status,
+                readiness_sleep=sess.readiness_sleep,
+                readiness_soreness=sess.readiness_soreness,
+                readiness_stress=sess.readiness_stress,
+                created_at=str(sess.created_at) if sess.created_at else None,
+                block_phase=block_phase_val,
+            ))
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to get sessions")
+    finally:
+        db.close()

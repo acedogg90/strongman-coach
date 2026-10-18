@@ -248,6 +248,7 @@ class SetLog(Base):
     e1rm_lb = Column(REAL)
     confidence = Column(String(10), default="low")
     pain_flag = Column(Boolean, default=False)
+    set_type = Column(String(20), default="top")  # warmup, top, backoff, apre
     note = Column(Text)
     logged_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
