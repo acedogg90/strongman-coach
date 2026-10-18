@@ -16,8 +16,11 @@ from sqlalchemy import text
 
 from app.database import (
     Base,
+    Block,
+    Cycle,
     Exercise,
     Prescription,
+    Program,
     Session as DBSession,
     SetLog,
     get_engine,
@@ -32,6 +35,7 @@ from app.strength.warmup_backoff import (
     calculate_backoff_series,
     get_default_drop_pct,
 )
+from app.strength.adjustment_rules import evaluate_adjustments
 
 app = FastAPI(title="Strongman Coach")
 
@@ -96,6 +100,41 @@ class BackoffRequest(BaseModel):
     phase: Optional[str] = None
     notes: Optional[str] = None
     max_sets: int = 6
+
+
+class SessionCreate(BaseModel):
+    """Request to create a new session."""
+    day_label: str  # A, B, C, or D
+    scheduled_date: Optional[str] = None
+    readiness_sleep: Optional[int] = None
+    readiness_soreness: Optional[int] = None
+    readiness_stress: Optional[int] = None
+
+
+class SetLogRequest(BaseModel):
+    """Request to log a set."""
+    exercise_name: str
+    weight: float
+    reps: int
+    rpe: Optional[float] = None
+    set_type: str = "top"  # warmup, top, backoff, apre
+    pain_flag: bool = False
+    note: Optional[str] = None
+
+
+class SessionResponse(BaseModel):
+    """Response for a session."""
+    id: int
+    cycle_id: int
+    day_label: str
+    scheduled_date: Optional[str] = None
+    actual_date: Optional[str] = None
+    status: str
+    readiness_sleep: Optional[int] = None
+    readiness_soreness: Optional[int] = None
+    readiness_stress: Optional[int] = None
+    created_at: Optional[str] = None
+    block_phase: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
