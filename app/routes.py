@@ -137,6 +137,42 @@ class SessionResponse(BaseModel):
     block_phase: Optional[str] = None
 
 
+class SessionCompleteRequest(BaseModel):
+    """Request to complete a session."""
+    readiness_sleep: Optional[int] = None
+    readiness_soreness: Optional[int] = None
+    readiness_stress: Optional[int] = None
+
+
+class SetLogResponse(BaseModel):
+    """Response for a logged set."""
+    id: int
+    prescription_id: int
+    exercise_name: str
+    actual_load_lb: float
+    actual_reps: int
+    rpe: Optional[float] = None
+    e1rm_lb: Optional[float] = None
+    confidence: str
+    pain_flag: bool
+    set_type: str
+    note: Optional[str] = None
+    logged_at: Optional[str] = None
+
+
+class SessionCompleteResponse(BaseModel):
+    """Response when completing a session."""
+    session_id: int
+    status: str
+    adjustments: list[dict] = []
+    skip_backoffs: bool = False
+    allow_extra_set: bool = False
+    early_deload: bool = False
+    pain_flags: list[str] = []
+    next_e1rm_adjustment: float = 0.0
+    suggested_variation_swap: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Helper: get a session
 # ---------------------------------------------------------------------------
