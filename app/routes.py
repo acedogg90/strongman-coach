@@ -168,7 +168,7 @@ class SessionCompleteResponse(BaseModel):
     skip_backoffs: bool = False
     allow_extra_set: bool = False
     early_deload: bool = False
-    pain_flags: list[str] = []
+    pain_flags: list[dict] = []
     next_e1rm_adjustment: float = 0.0
     suggested_variation_swap: Optional[str] = None
 
@@ -969,7 +969,7 @@ def complete_session(session_id: int, req: SessionCompleteRequest = None):
             skip_backoffs=adjustments.skip_backoffs,
             allow_extra_set=adjustments.allow_extra_set,
             early_deload=adjustments.early_deload,
-            pain_flags=adjustments.pain_flags,
+            pain_flags=[{"exercise": name} for name in adjustments.pain_flags],
             next_e1rm_adjustment=adjustments.next_e1rm_adjustment,
             suggested_variation_swap=adjustments.suggested_variation_swap,
         )
