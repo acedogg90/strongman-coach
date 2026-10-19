@@ -55,10 +55,16 @@ def startup():
 # ---------------------------------------------------------------------------
 
 @app.get("/")
-def root_redirect():
-    """Redirect root to the logging screen."""
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/log.html")
+def root_dashboard():
+    """Serve the dashboard screen."""
+    import os
+    template_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html")
+    if os.path.exists(template_path):
+        return FileResponse(template_path)
+    return HTMLResponse(
+        content="<html><body><h1>Dashboard</h1><p>frontend/index.html not found</p></body></html>",
+        status_code=503,
+    )
 
 
 @app.get("/log.html")
@@ -72,6 +78,30 @@ def log_page():
         content="<html><body><h1>Logging screen</h1><p>templates/log.html not found</p></body></html>",
         status_code=503,
     )
+
+
+# ---------------------------------------------------------------------------
+# Static file serving for dashboard assets
+# ---------------------------------------------------------------------------
+
+@app.get("/static/css/dashboard.css")
+def serve_dashboard_css():
+    """Serve the dashboard CSS file."""
+    import os
+    css_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "static", "css", "dashboard.css")
+    if os.path.exists(css_path):
+        return FileResponse(css_path, media_type="text/css")
+    return HTMLResponse(content="", status_code=404)
+
+
+@app.get("/static/js/dashboard.js")
+def serve_dashboard_js():
+    """Serve the dashboard JS file."""
+    import os
+    js_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "static", "js", "dashboard.js")
+    if os.path.exists(js_path):
+        return FileResponse(js_path, media_type="application/javascript")
+    return HTMLResponse(content="", status_code=404)
 
 
 @app.get("/api/prescriptions/today")
@@ -1644,5 +1674,180 @@ def import_csv(req: ImportRequest):
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to import CSV")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Dashboard API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/dashboard")
+def get_dashboard():
+    """Return dashboard data: cycle info, next workout, e1RM trends,
+    recent sessions, pain flags, and deload warnings."""
+    db = _get_session()
+    try:
+        # --- Current cycle and block phase ---
+        prog = (
+            db.query(Program)
+            .filter_by(is_active=True)
+            .order_by(Program.start_date.desc())
+            .first()
+        )
+        current_cycle = 0
+        block_phase = "none"
+        if prog:
+            block_phase = prog.phase or "none"
+            # Find the most recent cycle in this program
+            cyc = (
+                db.query(Cycle)
+                .filter_by(block_id=db.query(Block).filter_by(program_id=prog.id).first().id if db.query(Block).filter_by(program_id=prog.id).first() else -1)
+                .order_by(Cycle.cycle_number.desc())
+                .first()
+            )
+            if cyc:
+                current_cycle = cyc.cycle_number
+
+        # --- Next workout ---
+        next_workout = None
+        planned = (
+            db.query(DBSession)
+            .filter(DBSession.status != "completed")
+            .filter(DBSession.scheduled_date >= datetime.date.today())
+            .order_by(DBSession.scheduled_date.asc(), DBSession.created_at.asc())
+            .first()
+        )
+        if planned:
+            next_workout = {
+                "day_label": planned.day_label,
+                "scheduled_date": str(planned.scheduled_date),
+            }
+
+        # --- e1RM trends for main lifts ---
+        main_lifts = ["Deadlift", "Overhead Press", "Squat"]
+        e1rm_trends = []
+        for lift_name in main_lifts:
+            ex = db.query(Exercise).filter_by(name=lift_name).first()
+            if not ex:
+                e1rm_trends.append({"exercise": lift_name, "history": [], "trend_e1rm": None})
+                continue
+
+            # Get completed sessions with set logs for this exercise, ordered by date
+            sessions = (
+                db.query(DBSession)
+                .join(SetLog, SetLog.session_id == DBSession.id)
+                .filter(
+                    SetLog.exercise_id == ex.id,
+                    DBSession.status == "completed",
+                    SetLog.confidence == "high",
+                )
+                .order_by(DBSession.scheduled_date.asc())
+                .all()
+            )
+
+            history = []
+            for sess in sessions:
+                # Get the highest e1RM from high-confidence sets in this session
+                best_e1rm = (
+                    db.query(SetLog)
+                    .filter(
+                        SetLog.session_id == sess.id,
+                        SetLog.exercise_id == ex.id,
+                        SetLog.confidence == "high",
+                    )
+                    .order_by(SetLog.e1rm_lb.desc())
+                    .first()
+                )
+                if best_e1rm and best_e1rm.e1rm_lb:
+                    history.append({
+                        "date": str(sess.scheduled_date),
+                        "e1rm": best_e1rm.e1rm_lb,
+                    })
+
+            # Calculate trend e1RM: mean of best 2 of last 3 sessions
+            trend_e1rm = None
+            if len(history) >= 1:
+                last_3 = [h["e1rm"] for h in history[-3:]]
+                last_3_sorted = sorted(last_3, reverse=True)
+                best_2 = last_3_sorted[:2]
+                trend_e1rm = sum(best_2) / len(best_2)
+
+            e1rm_trends.append({
+                "exercise": lift_name,
+                "history": history,
+                "trend_e1rm": trend_e1rm,
+            })
+
+        # --- Recent sessions (last 5 completed) ---
+        recent_sessions = (
+            db.query(DBSession)
+            .filter_by(status="completed")
+            .order_by(DBSession.scheduled_date.desc())
+            .limit(5)
+            .all()
+        )
+        recent_sessions_data = []
+        for sess in recent_sessions:
+            # Get exercises with set logs for this session
+            set_logs = (
+                db.query(SetLog)
+                .join(Exercise, Exercise.id == SetLog.exercise_id)
+                .filter(SetLog.session_id == sess.id)
+                .all()
+            )
+            exercise_names = list(set(sl.exercise.name for sl in set_logs))
+            summary = ", ".join(exercise_names) if exercise_names else "No exercises logged"
+
+            recent_sessions_data.append({
+                "date": str(sess.scheduled_date),
+                "day_label": sess.day_label,
+                "summary": summary,
+            })
+
+        # --- Pain flags ---
+        pain_flags = []
+        # Look at set logs with pain_flag=True from recent sessions
+        pain_logs = (
+            db.query(SetLog)
+            .join(Exercise, Exercise.id == SetLog.exercise_id)
+            .join(DBSession, DBSession.id == SetLog.session_id)
+            .filter(SetLog.pain_flag == True)
+            .order_by(DBSession.scheduled_date.desc())
+            .all()
+        )
+        for log in pain_logs:
+            pain_flags.append({
+                "exercise": log.exercise.name,
+                "session_date": str(log.session.scheduled_date),
+                "note": log.note,
+            })
+
+        # --- Deload warning ---
+        deload_warning = {"triggered": False, "message": "", "cycles_stalled": 0}
+        # Check if any main lift has stalled (e1RM not higher than 3 cycles ago)
+        for trend in e1rm_trends:
+            history = trend["history"]
+            if len(history) >= 3:
+                # Compare oldest of last 3 with newest
+                oldest_e1rm = history[-3]["e1rm"]
+                newest_e1rm = history[-1]["e1rm"]
+                if newest_e1rm <= oldest_e1rm:
+                    deload_warning = {
+                        "triggered": True,
+                        "message": f"{trend['exercise']} has stalled for 3 cycles",
+                        "cycles_stalled": 3,
+                    }
+                    break
+
+        return {
+            "current_cycle": current_cycle,
+            "block_phase": block_phase,
+            "next_workout": next_workout,
+            "e1rm_trends": e1rm_trends,
+            "recent_sessions": recent_sessions_data,
+            "pain_flags": pain_flags,
+            "deload_warning": deload_warning,
+        }
     finally:
         db.close()

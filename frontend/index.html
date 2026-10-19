@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Strongman Coach — Dashboard</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header id="app-header">
+    <h1>Strongman Coach</h1>
+    <button id="refresh-btn" title="Refresh dashboard">↻</button>
+  </header>
+
+  <main id="dashboard">
+    <!-- Cycle / Block Phase -->
+    <section id="cycle-info" class="card">
+      <h2>Current Program</h2>
+      <div class="cycle-row">
+        <span>Cycle: <strong id="cycle-number">—</strong></span>
+        <span>Phase: <strong id="block-phase">—</strong></span>
+      </div>
+    </section>
+
+    <!-- Next Workout -->
+    <section id="next-workout" class="card">
+      <h2>Next Workout</h2>
+      <div id="next-workout-content">
+        <span id="next-day-label">—</span>
+        <span id="next-date">—</span>
+      </div>
+    </section>
+
+    <!-- e1RM Trend Charts -->
+    <section id="e1rm-trends" class="card">
+      <h2>e1RM Trends</h2>
+      <div class="chart-container">
+        <canvas id="deadlift-chart"></canvas>
+      </div>
+      <div class="chart-container">
+        <canvas id="ohp-chart"></canvas>
+      </div>
+      <div class="chart-container">
+        <canvas id="squat-chart"></canvas>
+      </div>
+    </section>
+
+    <!-- Recent Sessions -->
+    <section id="recent-sessions" class="card">
+      <h2>Recent Sessions</h2>
+      <ul id="sessions-list"></ul>
+    </section>
+
+    <!-- Pain Flags -->
+    <section id="pain-flags" class="card">
+      <h2>Pain Flags</h2>
+      <ul id="pain-flags-list"></ul>
+      <p id="no-pain-flags" class="hidden">No active pain flags.</p>
+    </section>
+
+    <!-- Deload Warning -->
+    <section id="deload-warning" class="card warning hidden">
+      <h2>⚠ Deload Warning</h2>
+      <p id="deload-message"></p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Strongman Coach — Not medical advice.</p>
+  </footer>
+
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
