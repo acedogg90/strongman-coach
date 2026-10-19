@@ -8,7 +8,7 @@ that work with the new schema.
 from __future__ import annotations
 
 import datetime
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -137,7 +137,7 @@ def get_today_prescriptions():
 
 
 @app.post("/api/sync")
-def sync_offline_sets(req: list):
+def sync_offline_sets(req: List[dict]):
     """Sync a batch of offline-queued sets.
 
     Accepts a list of set log requests and processes them all in one transaction.
