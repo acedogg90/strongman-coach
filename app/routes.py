@@ -265,6 +265,8 @@ def log_entry(entry: TrainingEntryCreate):
             e1rm = entry.weight * (1 + entry.reps / 30.0)
 
             slog = SetLog(
+                exercise_id=ex.id,
+                session_id=db_sess.id,
                 prescription_id=pres.id,
                 actual_load_lb=entry.weight,
                 actual_reps=entry.reps,
@@ -818,6 +820,8 @@ def log_set(session_id: int, req: SetLogRequest):
 
         # Create set log
         slog = SetLog(
+            exercise_id=ex.id,
+            session_id=sess.id,
             prescription_id=pres.id,
             actual_load_lb=req.weight,
             actual_reps=req.reps,

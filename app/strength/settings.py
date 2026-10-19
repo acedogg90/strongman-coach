@@ -288,6 +288,8 @@ def import_sessions_csv(session: Session, csv_data: str) -> dict[str, int]:
 
         # Create set_log
         slog = SetLog(
+            exercise_id=exercise_map[ex_name],
+            session_id=db_sess.id,
             prescription_id=pres.id,
             actual_load_lb=actual_load,
             actual_reps=actual_reps,

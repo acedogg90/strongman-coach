@@ -17,6 +17,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     REAL,
     String,
@@ -116,6 +117,7 @@ class Exercise(Base):
 
     prescriptions = relationship("Prescription", back_populates="exercise")
     prs = relationship("PR", back_populates="exercise")
+    set_logs = relationship("SetLog", back_populates="exercise")
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +208,7 @@ class Session(Base):
 
     cycle = relationship("Cycle", back_populates="sessions")
     prescriptions = relationship("Prescription", back_populates="session")
+    set_logs = relationship("SetLog", back_populates="session")
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +242,14 @@ class Prescription(Base):
 
 class SetLog(Base):
     __tablename__ = "set_log"
+    __table_args__ = (
+        Index("ix_set_log_exercise_session", "exercise_id", "session_id"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    prescription_id = Column(Integer, ForeignKey("prescription.id"), nullable=False)
+    exercise_id = Column(Integer, ForeignKey("exercise.id"), nullable=False)
+    session_id = Column(Integer, ForeignKey("session.id"), nullable=True)
+    prescription_id = Column(Integer, ForeignKey("prescription.id"), nullable=True)
     actual_load_lb = Column(REAL, nullable=False)
     actual_reps = Column(Integer, nullable=False)
     rpe = Column(REAL)
@@ -252,7 +260,9 @@ class SetLog(Base):
     note = Column(Text)
     logged_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
+    exercise = relationship("Exercise", back_populates="set_logs")
     prescription = relationship("Prescription", back_populates="set_log")
+    session = relationship("Session", back_populates="set_logs")
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +596,8 @@ def migrate_from_training_entry(db_url: str = "sqlite:///strongman_coach.db") ->
 
                 # Create set_log
                 slog = SetLog(
+                    exercise_id=ex_id,
+                    session_id=sess.id,
                     prescription_id=pres.id,
                     actual_load_lb=float(weight) if weight else 0.0,
                     actual_reps=int(reps) if reps else 1,
