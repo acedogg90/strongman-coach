@@ -244,6 +244,7 @@ class SetLog(Base):
     __tablename__ = "set_log"
     __table_args__ = (
         Index("ix_set_log_exercise_session", "exercise_id", "session_id"),
+        Index("ix_set_log_idempotency", "idempotency_key", unique=True),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -258,6 +259,7 @@ class SetLog(Base):
     pain_flag = Column(Boolean, default=False)
     set_type = Column(String(20), default="top")  # warmup, top, backoff, apre
     note = Column(Text)
+    idempotency_key = Column(String(64), nullable=True)
     logged_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     exercise = relationship("Exercise", back_populates="set_logs")
