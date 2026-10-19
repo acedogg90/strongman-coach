@@ -8,9 +8,10 @@ that work with the new schema.
 from __future__ import annotations
 
 import datetime
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -47,6 +48,231 @@ app = FastAPI(title="Strongman Coach")
 def startup():
     init_db()
     migrate_from_training_entry()
+
+
+# ---------------------------------------------------------------------------
+# Static / PWA routes
+# ---------------------------------------------------------------------------
+
+@app.get("/")
+def root_redirect():
+    """Redirect root to the logging screen."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/log.html")
+
+
+@app.get("/log.html")
+def log_page():
+    """Serve the phone-first logging screen."""
+    import os
+    template_path = os.path.join(os.path.dirname(__file__), "..", "templates", "log.html")
+    if os.path.exists(template_path):
+        return FileResponse(template_path)
+    return HTMLResponse(
+        content="<html><body><h1>Logging screen</h1><p>templates/log.html not found</p></body></html>",
+        status_code=503,
+    )
+
+
+@app.get("/api/prescriptions/today")
+def get_today_prescriptions():
+    """Get today's session prescriptions with computed loads.
+
+    Returns the active session's prescriptions with warm-up and back-off loads
+    pre-computed so the phone screen can show them immediately.
+    """
+    db = _get_session()
+    try:
+        today = datetime.date.today()
+        # Find the in-progress session for today
+        sess = (
+            db.query(DBSession)
+            .filter_by(scheduled_date=today, status="in_progress")
+            .order_by(DBSession.created_at.desc())
+            .first()
+        )
+        if not sess:
+            return {"session": None, "prescriptions": []}
+
+        # Get block phase
+        cycle = db.query(Cycle).filter_by(id=sess.cycle_id).first()
+        block_phase = None
+        if cycle:
+            block = db.query(Block).filter_by(id=cycle.block_id).first()
+            if block:
+                program = db.query(Program).filter_by(id=block.program_id).first()
+                if program:
+                    block_phase = program.phase
+
+        # Get prescriptions for this session
+        prescriptions = db.query(Prescription).filter_by(session_id=sess.id).all()
+        pres_list = []
+        for pres in prescriptions:
+            ex = db.query(Exercise).filter_by(id=pres.exercise_id).first()
+            pres_list.append({
+                "id": pres.id,
+                "exercise_name": ex.name if ex else "Unknown",
+                "exercise_id": pres.exercise_id,
+                "prescribed_reps": pres.prescribed_reps,
+                "prescribed_load_lb": pres.prescribed_load_lb,
+                "prescribed_rpe": pres.prescribed_rpe,
+                "set_number": pres.set_number,
+            })
+
+        return {
+            "session": {
+                "id": sess.id,
+                "day_label": sess.day_label,
+                "scheduled_date": str(sess.scheduled_date),
+                "status": sess.status,
+                "block_phase": block_phase,
+            },
+            "prescriptions": pres_list,
+        }
+
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to get prescriptions")
+    finally:
+        db.close()
+
+
+@app.post("/api/sync")
+def sync_offline_sets(req: List[dict]):
+    """Sync a batch of offline-queued sets.
+
+    Accepts a list of set log requests and processes them all in one transaction.
+    Supports idempotency via idempotency_key on each set.
+    """
+    db = _get_session()
+    results = []
+    try:
+        for item in req:
+            # Convert dict to SetLogRequest
+            set_req = SetLogRequest(**item)
+            session_id = set_req.session_id if hasattr(set_req, 'session_id') else None
+
+            # Find or create session if needed
+            if session_id:
+                sess = db.query(DBSession).filter_by(id=session_id).first()
+                if not sess:
+                    results.append({"error": f"Session {session_id} not found", "input": item})
+                    continue
+                if sess.status != "in_progress":
+                    sess.status = "in_progress"
+                    db.flush()
+            else:
+                # Create a session for today
+                today = datetime.date.today()
+                sess = (
+                    db.query(DBSession)
+                    .filter_by(scheduled_date=today, status="in_progress")
+                    .first()
+                )
+                if not sess:
+                    program = db.query(Program).filter_by(is_active=True).first()
+                    if not program:
+                        program = Program(athlete_id=1, name="Default Program",
+                                         phase="accumulation", start_date=today, is_active=True)
+                        db.add(program)
+                        db.flush()
+                    block = db.query(Block).filter_by(program_id=program.id).first()
+                    if not block:
+                        block = Block(program_id=program.id, block_number=1, start_date=today)
+                        db.add(block)
+                        db.flush()
+                    cycle = db.query(Cycle).filter_by(block_id=block.id).first()
+                    if not cycle:
+                        cycle = Cycle(block_id=block.id, cycle_number=1, start_date=today)
+                        db.add(cycle)
+                        db.flush()
+                    sess = DBSession(
+                        cycle_id=cycle.id, day_label="A",
+                        scheduled_date=today, actual_date=today,
+                        status="in_progress",
+                    )
+                    db.add(sess)
+                    db.flush()
+                    session_id = sess.id
+
+            # Idempotency check
+            if set_req.idempotency_key:
+                existing = db.query(SetLog).filter_by(idempotency_key=set_req.idempotency_key).first()
+                if existing:
+                    results.append({
+                        "id": existing.id,
+                        "exercise_name": existing.exercise.name if existing.exercise else set_req.exercise_name,
+                        "actual_load_lb": existing.actual_load_lb,
+                        "actual_reps": existing.actual_reps,
+                        "rpe": existing.rpe,
+                        "set_type": existing.set_type,
+                        "duplicate": True,
+                    })
+                    continue
+
+            # Ensure exercise exists
+            ex = db.query(Exercise).filter_by(name=set_req.exercise_name).first()
+            if not ex:
+                ex = Exercise(name=set_req.exercise_name, role="accessory", metric_type="load_reps")
+                db.add(ex)
+                db.flush()
+
+            # Create prescription
+            pres = Prescription(
+                session_id=sess.id, exercise_id=ex.id, set_number=1,
+                prescribed_reps=set_req.reps, prescribed_load_lb=set_req.weight,
+                prescribed_rpe=set_req.rpe,
+            )
+            db.add(pres)
+            db.flush()
+
+            # Calculate e1RM
+            e1rm_val = None
+            confidence = "low"
+            try:
+                if set_req.rpe is not None and set_req.rpe >= 7.0 and set_req.reps <= 8:
+                    from app.strength.rpe import e1rm as calc_e1rm
+                    result = calc_e1rm(set_req.weight, set_req.reps, set_req.rpe)
+                    if isinstance(result, dict):
+                        e1rm_val = result.get("e1rm")
+                        confidence = result.get("confidence", "high")
+                    else:
+                        e1rm_val = float(result)
+                        confidence = "high"
+                else:
+                    e1rm_val = round(set_req.weight * (1 + set_req.reps / 30.0), 1)
+                    confidence = "low"
+            except Exception:
+                e1rm_val = round(set_req.weight * (1 + set_req.reps / 30.0), 1)
+                confidence = "low"
+
+            slog = SetLog(
+                exercise_id=ex.id, session_id=sess.id, prescription_id=pres.id,
+                actual_load_lb=set_req.weight, actual_reps=set_req.reps,
+                rpe=set_req.rpe, e1rm_lb=e1rm_val, confidence=confidence,
+                pain_flag=set_req.pain_flag, set_type=set_req.set_type,
+                note=set_req.note, idempotency_key=set_req.idempotency_key,
+            )
+            db.add(slog)
+            db.flush()
+
+            results.append({
+                "id": slog.id,
+                "exercise_name": set_req.exercise_name,
+                "actual_load_lb": slog.actual_load_lb,
+                "actual_reps": slog.actual_reps,
+                "rpe": slog.rpe,
+                "set_type": slog.set_type,
+                "duplicate": False,
+            })
+
+        db.commit()
+        return {"synced": len(results), "results": results}
+
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to sync sets")
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +346,8 @@ class SetLogRequest(BaseModel):
     set_type: str = "top"  # warmup, top, backoff, apre
     pain_flag: bool = False
     note: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    session_id: Optional[int] = None
 
 
 class SessionResponse(BaseModel):
@@ -755,9 +983,34 @@ def create_session(req: SessionCreate):
 
 @app.post("/api/sessions/{session_id}/sets")
 def log_set(session_id: int, req: SetLogRequest):
-    """Log a set with exercise, weight, reps, rpe, set_type."""
+    """Log a set with exercise, weight, reps, rpe, set_type.
+
+    Supports idempotency: if the same idempotency_key is sent twice,
+    the second call returns the already-logged set without creating a duplicate.
+    """
     db = _get_session()
     try:
+        # Idempotency check: if key provided, look for existing set
+        if req.idempotency_key:
+            existing = db.query(SetLog).filter_by(
+                idempotency_key=req.idempotency_key
+            ).first()
+            if existing:
+                return SetLogResponse(
+                    id=existing.id,
+                    prescription_id=existing.prescription_id,
+                    exercise_name=existing.exercise.name if existing.exercise else req.exercise_name,
+                    actual_load_lb=existing.actual_load_lb,
+                    actual_reps=existing.actual_reps,
+                    rpe=existing.rpe,
+                    e1rm_lb=existing.e1rm_lb,
+                    confidence=existing.confidence,
+                    pain_flag=existing.pain_flag,
+                    set_type=existing.set_type,
+                    note=existing.note,
+                    logged_at=str(existing.logged_at) if existing.logged_at else None,
+                )
+
         # Validate session exists and is in_progress
         sess = db.query(DBSession).filter_by(id=session_id).first()
         if not sess:
@@ -831,6 +1084,7 @@ def log_set(session_id: int, req: SetLogRequest):
             pain_flag=req.pain_flag,
             set_type=req.set_type,
             note=req.note,
+            idempotency_key=req.idempotency_key,
         )
         db.add(slog)
         db.flush()

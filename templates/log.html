@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>Strongman Coach – Log</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" href="/static/icon-192.png">
+  <style>
+    /* ===== Reset & Base ===== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0f0f1a;
+      --surface: #1a1a2e;
+      --surface2: #252540;
+      --primary: #e94560;
+      --primary-dim: #c73e54;
+      --text: #eee;
+      --text-dim: #999;
+      --success: #4caf50;
+      --warn: #ff9800;
+      --radius: 12px;
+      --tap: 48px; /* minimum tap target */
+    }
+    html { font-size: 16px; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    /* ===== Header ===== */
+    .header {
+      background: var(--surface);
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #333;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header h1 { font-size: 1.1rem; font-weight: 700; }
+    .header .status {
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: var(--surface2);
+    }
+    .header .status.online { color: var(--success); }
+    .header .status.offline { color: var(--warn); }
+
+    /* ===== Cards ===== */
+    .card {
+      background: var(--surface);
+      margin: 12px 12px 0;
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .card-title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+
+    /* ===== Prescription Summary ===== */
+    .rx-summary {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .rx-chip {
+      background: var(--surface2);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      min-height: var(--tap);
+      display: flex;
+      align-items: center;
+    }
+    .rx-chip .label { color: var(--text-dim); font-size: 0.75rem; }
+    .rx-chip .value { font-weight: 700; margin-left: 4px; }
+
+    /* ===== Exercise Section ===== */
+    .exercise-section {
+      margin: 12px 12px 0;
+    }
+    .exercise-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid #333;
+    }
+    .exercise-header h2 { font-size: 1.2rem; }
+    .exercise-header .e1rm-badge {
+      font-size: 0.8rem;
+      background: var(--surface2);
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    /* ===== Set Row ===== */
+    .set-row {
+      display: grid;
+      grid-template-columns: 40px 1fr 1fr 1fr auto;
+      gap: 8px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid #222;
+    }
+    .set-num {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--surface2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+    .set-num.logged { background: var(--success); color: #000; }
+
+    /* ===== Inputs ===== */
+    input[type="number"], input[type="text"] {
+      background: var(--surface2);
+      border: 1px solid #444;
+      border-radius: 8px;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 1.1rem;
+      width: 100%;
+      min-height: var(--tap);
+      text-align: center;
+    }
+    input:focus { outline: none; border-color: var(--primary); }
+
+    /* ===== RPE Picker ===== */
+    .rpe-picker {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .rpe-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 8px;
+      border: 2px solid transparent;
+      background: var(--surface2);
+      color: var(--text);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .rpe-btn.selected {
+      border-color: var(--primary);
+      background: var(--primary);
+      color: #fff;
+    }
+    .rpe-btn:active { transform: scale(0.95); }
+
+    /* ===== Pain Flag ===== */
+    .pain-toggle {
+      width: 48px;
+      height: 48px;
+      border-radius: 8px;
+      border: 2px solid #444;
+      background: var(--surface2);
+      color: var(--text-dim);
+      font-size: 1.4rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pain-toggle.active {
+      border-color: var(--primary);
+      background: var(--primary);
+      color: #fff;
+    }
+
+    /* ===== Buttons ===== */
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: var(--tap);
+      border-radius: var(--radius);
+      border: none;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+      padding: 0 20px;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-secondary { background: var(--surface2); color: var(--text); }
+    .btn-success { background: var(--success); color: #000; }
+
+    /* ===== Rest Timer ===== */
+    .timer-section {
+      text-align: center;
+      padding: 16px;
+    }
+    .timer-display {
+      font-size: 3rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      margin: 12px 0;
+    }
+    .timer-presets {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      margin: 12px 0;
+    }
+    .timer-preset {
+      min-height: var(--tap);
+      min-width: var(--tap);
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: var(--surface2);
+      color: var(--text);
+      font-size: 0.9rem;
+      cursor: pointer;
+      padding: 8px 16px;
+    }
+    .timer-preset:active { background: var(--primary); }
+
+    /* ===== Note Input ===== */
+    .note-input {
+      width: 100%;
+      min-height: var(--tap);
+      background: var(--surface2);
+      border: 1px solid #444;
+      border-radius: 8px;
+      color: var(--text);
+      padding: 10px;
+      font-size: 0.95rem;
+      resize: none;
+    }
+
+    /* ===== Queue Status ===== */
+    .queue-status {
+      text-align: center;
+      padding: 8px;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+    .queue-status .count { color: var(--warn); font-weight: 700; }
+
+    /* ===== Bottom Actions ===== */
+    .bottom-actions {
+      margin: 16px 12px;
+      display: flex;
+      gap: 8px;
+    }
+
+    /* ===== Scrollable ===== */
+    .scroll-area {
+      overflow-y: auto;
+      padding-bottom: 80px;
+    }
+
+    /* ===== Hidden ===== */
+    .hidden { display: none !important; }
+
+    /* ===== Back-off indicator ===== */
+    .backoff-hint {
+      font-size: 0.8rem;
+      color: var(--warn);
+      padding: 4px 8px;
+      background: rgba(255,152,0,0.1);
+      border-radius: 6px;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <h1>🏋️ Strongman Coach</h1>
+    <span class="status online" id="connectionStatus">● Online</span>
+  </div>
+
+  <!-- Queue Status -->
+  <div class="queue-status" id="queueStatus">
+    Queue: <span class="count" id="queueCount">0</span> pending
+  </div>
+
+  <div class="scroll-area">
+    <!-- Prescription Summary -->
+    <div class="card" id="rxCard">
+      <div class="card-title">Today's Prescription</div>
+      <div class="rx-summary" id="rxSummary">
+        <div class="rx-chip">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Exercises Container -->
+    <div id="exercisesContainer"></div>
+
+    <!-- Rest Timer -->
+    <div class="card timer-section" id="timerCard">
+      <div class="card-title">Rest Timer</div>
+      <div class="timer-display" id="timerDisplay">00:00</div>
+      <div class="timer-presets">
+        <button class="timer-preset" data-seconds="60">1:00</button>
+        <button class="timer-preset" data-seconds="90">1:30</button>
+        <button class="timer-preset" data-seconds="120">2:00</button>
+        <button class="timer-preset" data-seconds="180">3:00</button>
+        <button class="timer-preset" data-seconds="300">5:00</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="btn btn-primary" id="timerStart">▶ Start</button>
+        <button class="btn btn-secondary" id="timerReset">↺ Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Actions -->
+  <div class="bottom-actions">
+    <button class="btn btn-success" id="syncBtn">🔄 Sync Queue</button>
+    <button class="btn btn-primary" id="completeBtn">✓ Complete Session</button>
+  </div>
+
+  <script src="/static/log.js"></script>
+</body>
+</html>
