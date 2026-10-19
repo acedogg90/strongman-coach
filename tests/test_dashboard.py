@@ -380,9 +380,9 @@ class TestCycleAndBlock:
 class TestNextWorkout:
     def test_shows_next_planned_session(self, client):
         """Dashboard shows the next planned workout."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-        _create_planned_session(client, cyc.id, "A", tomorrow)
+        _create_planned_session(client, cycle_id, "A", tomorrow)
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -392,9 +392,9 @@ class TestNextWorkout:
 
     def test_next_workout_day_b(self, client):
         """Dashboard shows Day B as next workout."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         tomorrow = datetime.date.today() + datetime.timedelta(days=2)
-        _create_planned_session(client, cyc.id, "B", tomorrow)
+        _create_planned_session(client, cycle_id, "B", tomorrow)
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -402,9 +402,9 @@ class TestNextWorkout:
 
     def test_next_workout_day_c(self, client):
         """Dashboard shows Day C as next workout."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         tomorrow = datetime.date.today() + datetime.timedelta(days=3)
-        _create_planned_session(client, cyc.id, "C", tomorrow)
+        _create_planned_session(client, cycle_id, "C", tomorrow)
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -412,9 +412,9 @@ class TestNextWorkout:
 
     def test_next_workout_day_d(self, client):
         """Dashboard shows Day D as next workout."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         tomorrow = datetime.date.today() + datetime.timedelta(days=4)
-        _create_planned_session(client, cyc.id, "D", tomorrow)
+        _create_planned_session(client, cycle_id, "D", tomorrow)
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -429,11 +429,11 @@ class TestNextWorkout:
 
     def test_skips_completed_sessions(self, client):
         """Dashboard skips completed sessions for next workout."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
         tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-        _create_completed_session(client, cyc.id, "A", today, {})
-        _create_planned_session(client, cyc.id, "B", tomorrow)
+        _create_completed_session(client, cycle_id, "A", today, {})
+        _create_planned_session(client, cycle_id, "B", tomorrow)
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -447,9 +447,9 @@ class TestNextWorkout:
 class TestE1RMTrends:
     def test_includes_three_main_lifts(self, client):
         """Dashboard includes e1RM trends for deadlift, OHP, squat."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", today, {
+        _create_completed_session(client, cycle_id, "A", today, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
 
@@ -462,9 +462,9 @@ class TestE1RMTrends:
 
     def test_trend_has_history(self, client):
         """e1RM trend includes history entries."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", today, {
+        _create_completed_session(client, cycle_id, "A", today, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
 
@@ -476,13 +476,13 @@ class TestE1RMTrends:
 
     def test_trend_e1rm_calculated(self, client):
         """Trend e1RM is calculated from session history."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         d1 = datetime.date.today() - datetime.timedelta(days=14)
         d2 = datetime.date.today() - datetime.timedelta(days=7)
-        _create_completed_session(client, cyc.id, "A", d1, {
+        _create_completed_session(client, cycle_id, "A", d1, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
-        _create_completed_session(client, cyc.id, "A", d2, {
+        _create_completed_session(client, cycle_id, "A", d2, {
             "Deadlift": [{"load": 310, "reps": 5, "rpe": 8.0, "e1rm": 360}],
         })
 
@@ -495,9 +495,9 @@ class TestE1RMTrends:
 
     def test_squat_trend(self, client):
         """Squat e1RM trend is tracked."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "C", today, {
+        _create_completed_session(client, cycle_id, "C", today, {
             "Squat": [{"load": 275, "reps": 5, "rpe": 8.0, "e1rm": 320}],
         })
 
@@ -508,9 +508,9 @@ class TestE1RMTrends:
 
     def test_ohp_trend(self, client):
         """Overhead Press e1RM trend is tracked."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "B", today, {
+        _create_completed_session(client, cycle_id, "B", today, {
             "Overhead Press": [{"load": 135, "reps": 5, "rpe": 8.0, "e1rm": 160}],
         })
 
@@ -536,10 +536,10 @@ class TestE1RMTrends:
 class TestRecentSessions:
     def test_shows_last_5_sessions(self, client):
         """Dashboard shows up to 5 recent completed sessions."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         for i in range(5):
             d = datetime.date.today() - datetime.timedelta(days=i * 3)
-            _create_completed_session(client, cyc.id, "A", d, {})
+            _create_completed_session(client, cycle_id, "A", d, {})
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -547,10 +547,10 @@ class TestRecentSessions:
 
     def test_fewer_than_5_sessions(self, client):
         """Dashboard shows fewer sessions when less than 5 exist."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         for i in range(2):
             d = datetime.date.today() - datetime.timedelta(days=i * 3)
-            _create_completed_session(client, cyc.id, "A", d, {})
+            _create_completed_session(client, cycle_id, "A", d, {})
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -558,9 +558,9 @@ class TestRecentSessions:
 
     def test_session_has_date_and_day_label(self, client):
         """Each recent session has date and day_label."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "B", today, {})
+        _create_completed_session(client, cycle_id, "B", today, {})
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -571,9 +571,9 @@ class TestRecentSessions:
 
     def test_session_has_summary(self, client):
         """Each recent session has a summary of exercises."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", today, {
+        _create_completed_session(client, cycle_id, "A", today, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
 
@@ -584,11 +584,11 @@ class TestRecentSessions:
 
     def test_sessions_ordered_desc(self, client):
         """Recent sessions are ordered by date descending (newest first)."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         d1 = datetime.date.today() - datetime.timedelta(days=7)
         d2 = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", d1, {})
-        _create_completed_session(client, cyc.id, "A", d2, {})
+        _create_completed_session(client, cycle_id, "A", d1, {})
+        _create_completed_session(client, cycle_id, "A", d2, {})
 
         resp = client.get("/api/dashboard")
         data = resp.json()
@@ -610,9 +610,9 @@ class TestRecentSessions:
 class TestPainFlags:
     def test_shows_pain_flags(self, client):
         """Dashboard displays pain flags from recent sessions."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", today, {
+        _create_completed_session(client, cycle_id, "A", today, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350,
                          "pain_flag": True, "note": "Lower back tight"}],
         })
@@ -626,9 +626,9 @@ class TestPainFlags:
 
     def test_no_pain_flags(self, client):
         """Dashboard shows no pain flags when none exist."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", today, {
+        _create_completed_session(client, cycle_id, "A", today, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
 
@@ -638,9 +638,9 @@ class TestPainFlags:
 
     def test_pain_flag_without_note(self, client):
         """Pain flag works without a note."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", today, {
+        _create_completed_session(client, cycle_id, "A", today, {
             "Squat": [{"load": 275, "reps": 5, "rpe": 8.0, "e1rm": 320,
                       "pain_flag": True}],
         })
@@ -654,14 +654,14 @@ class TestPainFlags:
 
     def test_multiple_pain_flags(self, client):
         """Dashboard shows multiple pain flags from different sessions."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         d1 = datetime.date.today() - datetime.timedelta(days=7)
         d2 = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", d1, {
+        _create_completed_session(client, cycle_id, "A", d1, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350,
                          "pain_flag": True, "note": "Knee pain"}],
         })
-        _create_completed_session(client, cyc.id, "B", d2, {
+        _create_completed_session(client, cycle_id, "B", d2, {
             "Overhead Press": [{"load": 135, "reps": 5, "rpe": 8.0, "e1rm": 160,
                                "pain_flag": True, "note": "Shoulder"}],
         })
@@ -678,17 +678,17 @@ class TestPainFlags:
 class TestDeloadWarning:
     def test_no_warning_when_improving(self, client):
         """No deload warning when e1RM is improving."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         d1 = datetime.date.today() - datetime.timedelta(days=21)
         d2 = datetime.date.today() - datetime.timedelta(days=14)
         d3 = datetime.date.today() - datetime.timedelta(days=7)
-        _create_completed_session(client, cyc.id, "A", d1, {
+        _create_completed_session(client, cycle_id, "A", d1, {
             "Deadlift": [{"load": 280, "reps": 5, "rpe": 8.0, "e1rm": 330}],
         })
-        _create_completed_session(client, cyc.id, "A", d2, {
+        _create_completed_session(client, cycle_id, "A", d2, {
             "Deadlift": [{"load": 290, "reps": 5, "rpe": 8.0, "e1rm": 340}],
         })
-        _create_completed_session(client, cyc.id, "A", d3, {
+        _create_completed_session(client, cycle_id, "A", d3, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
 
@@ -698,17 +698,17 @@ class TestDeloadWarning:
 
     def test_warning_when_stalled(self, client):
         """Deload warning triggers when e1RM stalls for 3 cycles."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         d1 = datetime.date.today() - datetime.timedelta(days=21)
         d2 = datetime.date.today() - datetime.timedelta(days=14)
         d3 = datetime.date.today() - datetime.timedelta(days=7)
-        _create_completed_session(client, cyc.id, "A", d1, {
+        _create_completed_session(client, cycle_id, "A", d1, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
-        _create_completed_session(client, cyc.id, "A", d2, {
+        _create_completed_session(client, cycle_id, "A", d2, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
-        _create_completed_session(client, cyc.id, "A", d3, {
+        _create_completed_session(client, cycle_id, "A", d3, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
 
@@ -720,17 +720,17 @@ class TestDeloadWarning:
 
     def test_warning_when_declining(self, client):
         """Deload warning triggers when e1RM declines."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
         d1 = datetime.date.today() - datetime.timedelta(days=21)
         d2 = datetime.date.today() - datetime.timedelta(days=14)
         d3 = datetime.date.today() - datetime.timedelta(days=7)
-        _create_completed_session(client, cyc.id, "A", d1, {
+        _create_completed_session(client, cycle_id, "A", d1, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
-        _create_completed_session(client, cyc.id, "A", d2, {
+        _create_completed_session(client, cycle_id, "A", d2, {
             "Deadlift": [{"load": 290, "reps": 5, "rpe": 8.0, "e1rm": 340}],
         })
-        _create_completed_session(client, cyc.id, "A", d3, {
+        _create_completed_session(client, cycle_id, "A", d3, {
             "Deadlift": [{"load": 280, "reps": 5, "rpe": 8.0, "e1rm": 330}],
         })
 
@@ -746,7 +746,7 @@ class TestDeloadWarning:
 class TestDashboardRefresh:
     def test_dashboard_updates_after_session(self, client):
         """Dashboard reflects new completed session after it's added."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
 
         # Initially no sessions
         resp1 = client.get("/api/dashboard")
@@ -755,7 +755,7 @@ class TestDashboardRefresh:
 
         # Add a completed session
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", today, {
+        _create_completed_session(client, cycle_id, "A", today, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
 
@@ -767,7 +767,7 @@ class TestDashboardRefresh:
 
     def test_e1rm_trend_updates_after_session(self, client):
         """e1RM trends update after a new session is completed."""
-        prog, blk, cyc = _seed_program(client)
+        _, _, cycle_id = _seed_program(client)
 
         # Initially no trends
         resp1 = client.get("/api/dashboard")
@@ -777,7 +777,7 @@ class TestDashboardRefresh:
 
         # Add a session with deadlift
         today = datetime.date.today()
-        _create_completed_session(client, cyc.id, "A", today, {
+        _create_completed_session(client, cycle_id, "A", today, {
             "Deadlift": [{"load": 300, "reps": 5, "rpe": 8.0, "e1rm": 350}],
         })
 
