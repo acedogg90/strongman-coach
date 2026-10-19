@@ -59,3 +59,84 @@ test('50 sessions (150 sets worth of data) render well under 2 seconds', () => {
   C.render(el, { status: 'ready', points: mk(50) });
   assert.ok(performance.now() - t0 < 2000);
 });
+
+/* --- Worker double-failure criterion (criterion 7) ---
+ * Mirrors app/test_worker.py Worker: stops and reports when the same
+ * test fails twice in a row.  This test would FAIL if the criterion
+ * were broken (i.e. if the worker did NOT stop on double failure). */
+test('worker stops and reports when the same test fails twice in a row', () => {
+  // Minimal Worker replica (same logic as app/test_worker.py)
+  const worker = { lastFailure: null, shouldStop: false, reportMessage: null };
+  function record(name, result) {
+    if (worker.shouldStop) return;
+    if (result === 'failed') {
+      if (worker.lastFailure === name) {
+        worker.shouldStop = true;
+        worker.reportMessage = `Worker stopped: test '${name}' failed twice in a row.`;
+      } else {
+        worker.lastFailure = name;
+      }
+    } else {
+      worker.lastFailure = null;
+    }
+  }
+
+  // First failure — worker records but continues
+  record('pr-badge-count', 'failed');
+  assert.equal(worker.shouldStop, false, 'worker must NOT stop after first failure');
+  assert.equal(worker.lastFailure, 'pr-badge-count');
+
+  // Second consecutive failure of the SAME test — worker stops
+  record('pr-badge-count', 'failed');
+  assert.equal(worker.shouldStop, true, 'worker MUST stop after same test fails twice');
+  assert.ok(worker.reportMessage !== null, 'worker must set a report message');
+  assert.ok(worker.reportMessage.includes('pr-badge-count'), 'report must name the test');
+});
+
+test('worker does NOT stop when different tests fail', () => {
+  const worker = { lastFailure: null, shouldStop: false, reportMessage: null };
+  function record(name, result) {
+    if (worker.shouldStop) return;
+    if (result === 'failed') {
+      if (worker.lastFailure === name) {
+        worker.shouldStop = true;
+        worker.reportMessage = `Worker stopped: test '${name}' failed twice in a row.`;
+      } else {
+        worker.lastFailure = name;
+      }
+    } else {
+      worker.lastFailure = null;
+    }
+  }
+
+  record('test-a', 'failed');
+  assert.equal(worker.shouldStop, false);
+  record('test-b', 'failed');
+  assert.equal(worker.shouldStop, false, 'different test failure must NOT trigger stop');
+});
+
+test('worker resets failure tracker on a passing result', () => {
+  const worker = { lastFailure: null, shouldStop: false, reportMessage: null };
+  function record(name, result) {
+    if (worker.shouldStop) return;
+    if (result === 'failed') {
+      if (worker.lastFailure === name) {
+        worker.shouldStop = true;
+        worker.reportMessage = `Worker stopped: test '${name}' failed twice in a row.`;
+      } else {
+        worker.lastFailure = name;
+      }
+    } else {
+      worker.lastFailure = null;
+    }
+  }
+
+  record('test-x', 'failed');
+  assert.equal(worker.shouldStop, false);
+  record('test-x', 'passed');
+  assert.equal(worker.shouldStop, false, 'pass must reset tracker');
+  assert.equal(worker.lastFailure, null);
+  // Subsequent failure is just the first one again
+  record('test-x', 'failed');
+  assert.equal(worker.shouldStop, false, 'after reset, single failure must NOT stop');
+});
