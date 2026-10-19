@@ -51,7 +51,7 @@ def upgrade() -> None:
         sa.text("SELECT COUNT(*) FROM set_log WHERE exercise_id IS NULL")
     ).scalar()
     if null_count > 0:
-        raise sa.exc.SAWarning(
+        raise RuntimeError(
             f"Migration failed: {null_count} set_log rows could not be backfilled "
             "with exercise_id. Aborting migration."
         )
