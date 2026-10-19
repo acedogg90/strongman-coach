@@ -8,12 +8,10 @@ that work with the new schema.
 from __future__ import annotations
 
 import datetime
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -42,11 +40,6 @@ from app.strength.adjustment_rules import evaluate_adjustments
 
 app = FastAPI(title="Strongman Coach")
 
-# Mount static files (CSS, JS)
-_frontend_static = Path(__file__).resolve().parent.parent / "frontend" / "static"
-if _frontend_static.is_dir():
-    app.mount("/static", StaticFiles(directory=str(_frontend_static)), name="static")
-
 # ---------------------------------------------------------------------------
 # Startup: init DB and run migration
 # ---------------------------------------------------------------------------
@@ -58,18 +51,228 @@ def startup():
 
 
 # ---------------------------------------------------------------------------
-# Frontend: serve dashboard HTML
+# Static / PWA routes
 # ---------------------------------------------------------------------------
 
-_index_html = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+@app.get("/")
+def root_redirect():
+    """Redirect root to the logging screen."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/log.html")
 
 
-@app.get("/", response_class=HTMLResponse)
-def serve_dashboard():
-    """Serve the main dashboard HTML."""
-    if _index_html.is_file():
-        return HTMLResponse(content=_index_html.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Dashboard not found</h1>", status_code=404)
+@app.get("/log.html")
+def log_page():
+    """Serve the phone-first logging screen."""
+    import os
+    template_path = os.path.join(os.path.dirname(__file__), "..", "templates", "log.html")
+    if os.path.exists(template_path):
+        return FileResponse(template_path)
+    return HTMLResponse(
+        content="<html><body><h1>Logging screen</h1><p>templates/log.html not found</p></body></html>",
+        status_code=503,
+    )
+
+
+@app.get("/api/prescriptions/today")
+def get_today_prescriptions():
+    """Get today's session prescriptions with computed loads.
+
+    Returns the active session's prescriptions with warm-up and back-off loads
+    pre-computed so the phone screen can show them immediately.
+    """
+    db = _get_session()
+    try:
+        today = datetime.date.today()
+        # Find the in-progress session for today
+        sess = (
+            db.query(DBSession)
+            .filter_by(scheduled_date=today, status="in_progress")
+            .order_by(DBSession.created_at.desc())
+            .first()
+        )
+        if not sess:
+            return {"session": None, "prescriptions": []}
+
+        # Get block phase
+        cycle = db.query(Cycle).filter_by(id=sess.cycle_id).first()
+        block_phase = None
+        if cycle:
+            block = db.query(Block).filter_by(id=cycle.block_id).first()
+            if block:
+                program = db.query(Program).filter_by(id=block.program_id).first()
+                if program:
+                    block_phase = program.phase
+
+        # Get prescriptions for this session
+        prescriptions = db.query(Prescription).filter_by(session_id=sess.id).all()
+        pres_list = []
+        for pres in prescriptions:
+            ex = db.query(Exercise).filter_by(id=pres.exercise_id).first()
+            pres_list.append({
+                "id": pres.id,
+                "exercise_name": ex.name if ex else "Unknown",
+                "exercise_id": pres.exercise_id,
+                "prescribed_reps": pres.prescribed_reps,
+                "prescribed_load_lb": pres.prescribed_load_lb,
+                "prescribed_rpe": pres.prescribed_rpe,
+                "set_number": pres.set_number,
+            })
+
+        return {
+            "session": {
+                "id": sess.id,
+                "day_label": sess.day_label,
+                "scheduled_date": str(sess.scheduled_date),
+                "status": sess.status,
+                "block_phase": block_phase,
+            },
+            "prescriptions": pres_list,
+        }
+
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to get prescriptions")
+    finally:
+        db.close()
+
+
+@app.post("/api/sync")
+def sync_offline_sets(req: List[dict]):
+    """Sync a batch of offline-queued sets.
+
+    Accepts a list of set log requests and processes them all in one transaction.
+    Supports idempotency via idempotency_key on each set.
+    """
+    db = _get_session()
+    results = []
+    try:
+        for item in req:
+            # Convert dict to SetLogRequest
+            set_req = SetLogRequest(**item)
+            session_id = set_req.session_id if hasattr(set_req, 'session_id') else None
+
+            # Find or create session if needed
+            if session_id:
+                sess = db.query(DBSession).filter_by(id=session_id).first()
+                if not sess:
+                    results.append({"error": f"Session {session_id} not found", "input": item})
+                    continue
+                if sess.status != "in_progress":
+                    sess.status = "in_progress"
+                    db.flush()
+            else:
+                # Create a session for today
+                today = datetime.date.today()
+                sess = (
+                    db.query(DBSession)
+                    .filter_by(scheduled_date=today, status="in_progress")
+                    .first()
+                )
+                if not sess:
+                    program = db.query(Program).filter_by(is_active=True).first()
+                    if not program:
+                        program = Program(athlete_id=1, name="Default Program",
+                                         phase="accumulation", start_date=today, is_active=True)
+                        db.add(program)
+                        db.flush()
+                    block = db.query(Block).filter_by(program_id=program.id).first()
+                    if not block:
+                        block = Block(program_id=program.id, block_number=1, start_date=today)
+                        db.add(block)
+                        db.flush()
+                    cycle = db.query(Cycle).filter_by(block_id=block.id).first()
+                    if not cycle:
+                        cycle = Cycle(block_id=block.id, cycle_number=1, start_date=today)
+                        db.add(cycle)
+                        db.flush()
+                    sess = DBSession(
+                        cycle_id=cycle.id, day_label="A",
+                        scheduled_date=today, actual_date=today,
+                        status="in_progress",
+                    )
+                    db.add(sess)
+                    db.flush()
+                    session_id = sess.id
+
+            # Idempotency check
+            if set_req.idempotency_key:
+                existing = db.query(SetLog).filter_by(idempotency_key=set_req.idempotency_key).first()
+                if existing:
+                    results.append({
+                        "id": existing.id,
+                        "exercise_name": existing.exercise.name if existing.exercise else set_req.exercise_name,
+                        "actual_load_lb": existing.actual_load_lb,
+                        "actual_reps": existing.actual_reps,
+                        "rpe": existing.rpe,
+                        "set_type": existing.set_type,
+                        "duplicate": True,
+                    })
+                    continue
+
+            # Ensure exercise exists
+            ex = db.query(Exercise).filter_by(name=set_req.exercise_name).first()
+            if not ex:
+                ex = Exercise(name=set_req.exercise_name, role="accessory", metric_type="load_reps")
+                db.add(ex)
+                db.flush()
+
+            # Create prescription
+            pres = Prescription(
+                session_id=sess.id, exercise_id=ex.id, set_number=1,
+                prescribed_reps=set_req.reps, prescribed_load_lb=set_req.weight,
+                prescribed_rpe=set_req.rpe,
+            )
+            db.add(pres)
+            db.flush()
+
+            # Calculate e1RM
+            e1rm_val = None
+            confidence = "low"
+            try:
+                if set_req.rpe is not None and set_req.rpe >= 7.0 and set_req.reps <= 8:
+                    from app.strength.rpe import e1rm as calc_e1rm
+                    result = calc_e1rm(set_req.weight, set_req.reps, set_req.rpe)
+                    if isinstance(result, dict):
+                        e1rm_val = result.get("e1rm")
+                        confidence = result.get("confidence", "high")
+                    else:
+                        e1rm_val = float(result)
+                        confidence = "high"
+                else:
+                    e1rm_val = round(set_req.weight * (1 + set_req.reps / 30.0), 1)
+                    confidence = "low"
+            except Exception:
+                e1rm_val = round(set_req.weight * (1 + set_req.reps / 30.0), 1)
+                confidence = "low"
+
+            slog = SetLog(
+                exercise_id=ex.id, session_id=sess.id, prescription_id=pres.id,
+                actual_load_lb=set_req.weight, actual_reps=set_req.reps,
+                rpe=set_req.rpe, e1rm_lb=e1rm_val, confidence=confidence,
+                pain_flag=set_req.pain_flag, set_type=set_req.set_type,
+                note=set_req.note, idempotency_key=set_req.idempotency_key,
+            )
+            db.add(slog)
+            db.flush()
+
+            results.append({
+                "id": slog.id,
+                "exercise_name": set_req.exercise_name,
+                "actual_load_lb": slog.actual_load_lb,
+                "actual_reps": slog.actual_reps,
+                "rpe": slog.rpe,
+                "set_type": slog.set_type,
+                "duplicate": False,
+            })
+
+        db.commit()
+        return {"synced": len(results), "results": results}
+
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to sync sets")
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +346,8 @@ class SetLogRequest(BaseModel):
     set_type: str = "top"  # warmup, top, backoff, apre
     pain_flag: bool = False
     note: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    session_id: Optional[int] = None
 
 
 class SessionResponse(BaseModel):
@@ -194,50 +399,6 @@ class SessionCompleteResponse(BaseModel):
     pain_flags: list[dict] = []
     next_e1rm_adjustment: float = 0.0
     suggested_variation_swap: Optional[str] = None
-
-
-# ---------------------------------------------------------------------------
-# Dashboard models
-# ---------------------------------------------------------------------------
-
-class DashboardE1RMTrend(BaseModel):
-    """e1RM trend data for a single lift."""
-    exercise: str
-    trend_e1rm: Optional[float] = None
-    history: list[dict] = []  # [{"date": str, "e1rm": float}]
-
-
-class DashboardRecentSession(BaseModel):
-    """A recent completed session."""
-    id: int
-    date: str
-    day_label: str
-    summary: str = ""
-
-
-class DashboardPainFlag(BaseModel):
-    """Active pain flag from recent sessions."""
-    exercise: str
-    session_date: str
-    note: Optional[str] = None
-
-
-class DashboardDeloadWarning(BaseModel):
-    """Deload warning when adjustment rules trigger early deload."""
-    triggered: bool = False
-    message: str = ""
-    cycles_stalled: int = 0
-
-
-class DashboardResponse(BaseModel):
-    """Complete dashboard data."""
-    current_cycle: int
-    block_phase: str
-    next_workout: Optional[dict] = None  # {"day_label": str, "scheduled_date": str}
-    e1rm_trends: list[DashboardE1RMTrend] = []
-    recent_sessions: list[DashboardRecentSession] = []
-    pain_flags: list[DashboardPainFlag] = []
-    deload_warning: Optional[DashboardDeloadWarning] = None
 
 
 # ---------------------------------------------------------------------------
@@ -822,9 +983,34 @@ def create_session(req: SessionCreate):
 
 @app.post("/api/sessions/{session_id}/sets")
 def log_set(session_id: int, req: SetLogRequest):
-    """Log a set with exercise, weight, reps, rpe, set_type."""
+    """Log a set with exercise, weight, reps, rpe, set_type.
+
+    Supports idempotency: if the same idempotency_key is sent twice,
+    the second call returns the already-logged set without creating a duplicate.
+    """
     db = _get_session()
     try:
+        # Idempotency check: if key provided, look for existing set
+        if req.idempotency_key:
+            existing = db.query(SetLog).filter_by(
+                idempotency_key=req.idempotency_key
+            ).first()
+            if existing:
+                return SetLogResponse(
+                    id=existing.id,
+                    prescription_id=existing.prescription_id,
+                    exercise_name=existing.exercise.name if existing.exercise else req.exercise_name,
+                    actual_load_lb=existing.actual_load_lb,
+                    actual_reps=existing.actual_reps,
+                    rpe=existing.rpe,
+                    e1rm_lb=existing.e1rm_lb,
+                    confidence=existing.confidence,
+                    pain_flag=existing.pain_flag,
+                    set_type=existing.set_type,
+                    note=existing.note,
+                    logged_at=str(existing.logged_at) if existing.logged_at else None,
+                )
+
         # Validate session exists and is in_progress
         sess = db.query(DBSession).filter_by(id=session_id).first()
         if not sess:
@@ -898,6 +1084,7 @@ def log_set(session_id: int, req: SetLogRequest):
             pain_flag=req.pain_flag,
             set_type=req.set_type,
             note=req.note,
+            idempotency_key=req.idempotency_key,
         )
         db.add(slog)
         db.flush()
@@ -1457,185 +1644,5 @@ def import_csv(req: ImportRequest):
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to import CSV")
-    finally:
-        db.close()
-
-
-# ---------------------------------------------------------------------------
-# Dashboard API
-# ---------------------------------------------------------------------------
-
-@app.get("/api/dashboard")
-def get_dashboard():
-    """Get complete dashboard data for the main screen."""
-    db = _get_session()
-    try:
-        # 1. Current cycle and block phase
-        program = db.query(Program).filter_by(is_active=True).first()
-        if not program:
-            program = Program(
-                athlete_id=1,
-                name="Default Program",
-                phase="accumulation",
-                start_date=datetime.date.today(),
-                is_active=True,
-            )
-            db.add(program)
-            db.flush()
-
-        block = db.query(Block).filter_by(program_id=program.id).first()
-        if not block:
-            block = Block(
-                program_id=program.id,
-                block_number=1,
-                start_date=datetime.date.today(),
-            )
-            db.add(block)
-            db.flush()
-
-        cycle = db.query(Cycle).filter_by(block_id=block.id).order_by(Cycle.cycle_number.desc()).first()
-        current_cycle_num = cycle.cycle_number if cycle else 1
-        block_phase = program.phase
-
-        # 2. Next scheduled workout (first non-completed session)
-        next_session = (
-            db.query(DBSession)
-            .filter(DBSession.status != "completed")
-            .order_by(DBSession.scheduled_date.asc())
-            .first()
-        )
-        next_workout = None
-        if next_session:
-            next_workout = {
-                "day_label": next_session.day_label,
-                "scheduled_date": str(next_session.scheduled_date),
-            }
-
-        # 3. e1RM trends for main lifts (deadlift, overhead press, squat)
-        main_lifts = ["Deadlift", "Overhead Press", "Squat"]
-        e1rm_trends = []
-        for lift_name in main_lifts:
-            ex = db.query(Exercise).filter_by(name=lift_name).first()
-            if not ex:
-                ex = Exercise(name=lift_name, role="main", metric_type="load_reps")
-                db.add(ex)
-                db.flush()
-
-            # Get all completed sessions with set logs for this exercise
-            history = []
-            sessions = (
-                db.query(DBSession)
-                .filter_by(status="completed")
-                .order_by(DBSession.scheduled_date.asc())
-                .all()
-            )
-            for sess in sessions:
-                pres_list = db.query(Prescription).filter_by(
-                    session_id=sess.id, exercise_id=ex.id
-                ).all()
-                best_e1rm = None
-                for pres in pres_list:
-                    logs = db.query(SetLog).filter_by(
-                        prescription_id=pres.id,
-                        set_type="top"
-                    ).all()
-                    for log in logs:
-                        if log.e1rm_lb and (best_e1rm is None or log.e1rm_lb > best_e1rm):
-                            best_e1rm = log.e1rm_lb
-                if best_e1rm is not None:
-                    history.append({
-                        "date": str(sess.scheduled_date),
-                        "e1rm": best_e1rm,
-                    })
-
-            # Calculate trend e1RM (mean of best 2 of last 3 sessions)
-            trend_e1rm = None
-            if len(history) >= 2:
-                last_3 = [h["e1rm"] for h in history[-3:]]
-                sorted_vals = sorted(last_3, reverse=True)
-                top_2 = sorted_vals[:2]
-                trend_e1rm = round(sum(top_2) / len(top_2), 1)
-            elif len(history) == 1:
-                trend_e1rm = history[0]["e1rm"]
-
-            e1rm_trends.append(DashboardE1RMTrend(
-                exercise=lift_name,
-                trend_e1rm=trend_e1rm,
-                history=history,
-            ))
-
-        # 4. Recent sessions (last 5 completed)
-        recent_sessions = []
-        completed = (
-            db.query(DBSession)
-            .filter_by(status="completed")
-            .order_by(DBSession.scheduled_date.desc())
-            .limit(5)
-            .all()
-        )
-        for sess in completed:
-            # Build summary from set logs
-            pres_list = db.query(Prescription).filter_by(session_id=sess.id).all()
-            exercises = set()
-            for pres in pres_list:
-                ex = db.query(Exercise).filter_by(id=pres.exercise_id).first()
-                if ex:
-                    exercises.add(ex.name)
-            summary = ", ".join(sorted(exercises)) if exercises else "No exercises logged"
-            recent_sessions.append(DashboardRecentSession(
-                id=sess.id,
-                date=str(sess.scheduled_date),
-                day_label=sess.day_label,
-                summary=summary,
-            ))
-
-        # 5. Pain flags from recent sessions
-        pain_flags = []
-        for sess in completed:
-            pres_list = db.query(Prescription).filter_by(session_id=sess.id).all()
-            for pres in pres_list:
-                logs = db.query(SetLog).filter_by(
-                    prescription_id=pres.id, pain_flag=True
-                ).all()
-                for log in logs:
-                    ex = db.query(Exercise).filter_by(id=pres.exercise_id).first()
-                    ex_name = ex.name if ex else "Unknown"
-                    pain_flags.append(DashboardPainFlag(
-                        exercise=ex_name,
-                        session_date=str(sess.scheduled_date),
-                        note=log.note,
-                    ))
-
-        # 6. Deload warning check
-        deload_warning = DashboardDeloadWarning()
-        if len(e1rm_trends) > 0:
-            # Check if any main lift has stalled (3+ cycles without improvement)
-            for trend in e1rm_trends:
-                if len(trend.history) >= 3:
-                    last_3_e1rms = [h["e1rm"] for h in trend.history[-3:]]
-                    # Check if latest is not higher than 3 cycles ago
-                    if last_3_e1rms[-1] <= last_3_e1rms[0]:
-                        deload_warning.triggered = True
-                        deload_warning.message = (
-                            f"{trend.exercise} e1RM has not improved in 3 cycles. "
-                            f"Consider early deload."
-                        )
-                        deload_warning.cycles_stalled = 3
-                        break
-
-        return DashboardResponse(
-            current_cycle=current_cycle_num,
-            block_phase=block_phase,
-            next_workout=next_workout,
-            e1rm_trends=e1rm_trends,
-            recent_sessions=recent_sessions,
-            pain_flags=pain_flags,
-            deload_warning=deload_warning,
-        )
-
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to get dashboard data")
     finally:
         db.close()
