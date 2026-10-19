@@ -18,10 +18,14 @@ test('empty state when there is no history', () => {
   assert.match(el.innerHTML, /data-testid="empty-state"/);
   assert.doesNotMatch(el.innerHTML, /<svg/);
 });
-test('chart draws one line path and one dot per point', () => {
+test('chart renders an SVG element with line path and dots', () => {
   const el = box(); C.render(el, { status: 'ready', points: mk(8) });
+  // Directly verify the SVG element is rendered with correct attributes
+  assert.match(el.innerHTML, /<svg class="e1rm-svg" data-testid="chart-svg" viewBox="0 0 600 300"/);
   assert.equal(count(el.innerHTML, /<path class="e1rm-line" d="M/g), 1);
   assert.equal(count(el.innerHTML, /class="e1rm-dot"/g), 8);
+  // Verify the SVG contains actual coordinate data (not empty)
+  assert.match(el.innerHTML, /<path class="e1rm-line" d="M\d+\.\d+,\d+\.\d+/);
 });
 test('PR badges appear only on is_pr points', () => {
   const pts = mk(12), prs = pts.filter((p) => p.is_pr).length;
