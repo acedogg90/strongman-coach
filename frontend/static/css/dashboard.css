@@ -1,0 +1,151 @@
+/* Strongman Coach — Dashboard Styles */
+
+:root {
+  --bg: #1a1a2e;
+  --card-bg: #16213e;
+  --text: #e0e0e0;
+  --accent: #0f3460;
+  --highlight: #e94560;
+  --warning: #f39c12;
+  --success: #27ae60;
+  --border: #2c3e50;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 0;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: var(--accent);
+  border-bottom: 2px solid var(--highlight);
+}
+
+header h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+#refresh-btn {
+  background: var(--highlight);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+main {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.card {
+  background: var(--card-bg);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+}
+
+.card h2 {
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+  color: var(--highlight);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.cycle-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.95rem;
+}
+
+#next-workout-content {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.95rem;
+}
+
+.chart-container {
+  position: relative;
+  height: 200px;
+  margin-bottom: 1rem;
+}
+
+#sessions-list {
+  list-style: none;
+}
+
+#sessions-list li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+#sessions-list li:last-child {
+  border-bottom: none;
+}
+
+.session-date {
+  color: #aaa;
+  font-size: 0.8rem;
+}
+
+.session-day {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  margin-right: 0.5rem;
+}
+
+#pain-flags-list {
+  list-style: none;
+}
+
+#pain-flags-list li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+  color: var(--highlight);
+}
+
+.warning {
+  border-color: var(--warning);
+  background: rgba(243, 156, 18, 0.1);
+}
+
+.warning h2 {
+  color: var(--warning);
+}
+
+.hidden {
+  display: none !important;
+}
+
+footer {
+  text-align: center;
+  padding: 1rem;
+  font-size: 0.75rem;
+  color: #666;
+}

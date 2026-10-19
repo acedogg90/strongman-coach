@@ -11,6 +11,9 @@ import datetime
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -39,6 +42,11 @@ from app.strength.adjustment_rules import evaluate_adjustments
 
 app = FastAPI(title="Strongman Coach")
 
+# Mount static files (CSS, JS)
+_frontend_static = Path(__file__).resolve().parent.parent / "frontend" / "static"
+if _frontend_static.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_frontend_static)), name="static")
+
 # ---------------------------------------------------------------------------
 # Startup: init DB and run migration
 # ---------------------------------------------------------------------------
@@ -47,6 +55,21 @@ app = FastAPI(title="Strongman Coach")
 def startup():
     init_db()
     migrate_from_training_entry()
+
+
+# ---------------------------------------------------------------------------
+# Frontend: serve dashboard HTML
+# ---------------------------------------------------------------------------
+
+_index_html = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+
+
+@app.get("/", response_class=HTMLResponse)
+def serve_dashboard():
+    """Serve the main dashboard HTML."""
+    if _index_html.is_file():
+        return HTMLResponse(content=_index_html.read_text(encoding="utf-8"))
+    return HTMLResponse(content="<h1>Dashboard not found</h1>", status_code=404)
 
 
 # ---------------------------------------------------------------------------
