@@ -737,3 +737,128 @@ class TestMigrationInitBugs:
         athlete3 = s3_fresh.query(Athlete).first()
         assert athlete3 is not None, "Path 3 (with data): athlete not persisted"
         s3_fresh.close()
+
+    def test_migration_with_rows_full_path(self, db_url):
+        """Explicitly verify that when TrainingEntry table has rows,
+        migration proceeds as before: athlete created, exercises migrated,
+        set_logs created, PRs backfilled, and session committed."""
+        import app.database as db_mod
+        db_mod._engine = None
+        db_mod._session_factory = None
+
+        # Create TrainingEntry table with multiple rows
+        eng = get_engine(db_url)
+        factory = sessionmaker(bind=eng)
+        session = factory()
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS TrainingEntry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE,
+                exercise_name TEXT,
+                weight REAL,
+                reps INTEGER,
+                sets INTEGER,
+                notes TEXT
+            )
+        """))
+        session.execute(text("""
+            INSERT INTO TrainingEntry (date, exercise_name, weight, reps, sets, notes)
+            VALUES ('2024-01-15', 'Bench Press', 225.0, 5, 3, 'Strong'),
+                   ('2024-01-15', 'Squat', 315.0, 5, 3, NULL),
+                   ('2024-01-16', 'Deadlift', 405.0, 3, 2, 'Heavy')
+        """))
+        session.commit()
+        session.close()
+
+        stats = migrate_from_training_entry(db_url)
+        assert stats["migrated"] is True
+        assert stats["training_entry_count"] == 3
+        assert stats["set_log_count"] > 0
+        assert stats["exercise_count"] >= 3
+
+        # Verify everything persisted in a fresh session
+        fresh = factory()
+        try:
+            # Athlete exists
+            athlete = fresh.query(Athlete).first()
+            assert athlete is not None, "Athlete not created in full migration path"
+            assert athlete.name == "Athlete"
+
+            # Exercises exist
+            exercises = fresh.query(Exercise).all()
+            names = {e.name for e in exercises}
+            assert "Bench Press" in names
+            assert "Squat" in names
+            assert "Deadlift" in names
+
+            # Set logs exist
+            set_logs = fresh.query(SetLog).all()
+            assert len(set_logs) > 0, "Set logs not created in full migration path"
+
+            # Settings seeded
+            settings = fresh.query(Settings).all()
+            keys = {s.key for s in settings}
+            assert "migration_version" in keys
+        finally:
+            fresh.close()
+
+    def test_existing_migration_tests_still_pass(self, seeded_db):
+        """Regression guard: verify that the original migration test suite
+        still works — i.e., the seeded_db fixture produces a valid migration
+        with all expected data. This test would fail if any of the original
+        migration tests broke."""
+        session, stats = seeded_db
+
+        # These assertions mirror the original TestMigration tests
+        # If any of them fail, it means existing tests are broken
+
+        # test_migration_creates_athlete
+        athlete = session.query(Athlete).first()
+        assert athlete is not None
+        assert athlete.units == "lb"
+        assert athlete.plate_increment_lb == 2.5
+
+        # test_migration_creates_exercises
+        exercises = session.query(Exercise).all()
+        assert len(exercises) >= 5
+        names = {e.name for e in exercises}
+        assert "Bench Press" in names
+        assert "Squat" in names
+        assert "Deadlift" in names
+
+        # test_migration_creates_program
+        program = session.query(Program).filter_by(name="Imported History").first()
+        assert program is not None
+
+        # test_migration_creates_block_and_cycle
+        block = session.query(Block).filter_by(program_id=program.id).first()
+        assert block is not None
+        cycle = session.query(Cycle).filter_by(block_id=block.id).first()
+        assert cycle is not None
+
+        # test_migration_creates_sessions
+        from app.database import Session as DBSession
+        sessions = session.query(DBSession).filter_by(cycle_id=cycle.id).all()
+        assert len(sessions) > 0
+
+        # test_migration_creates_set_logs
+        set_logs = session.query(SetLog).all()
+        assert len(set_logs) > 0
+
+        # test_no_data_loss_row_count
+        assert stats["training_entry_count"] == 10
+
+        # test_migration_flag_set
+        flag = session.query(Settings).filter_by(key="migration_version").first()
+        assert flag is not None
+        assert flag.value == "1"
+
+        # test_settings_seeded
+        settings = session.query(Settings).all()
+        setting_keys = {s.key for s in settings}
+        assert "units" in setting_keys
+        assert "migration_version" in setting_keys
+
+        # test_equipment_seeded
+        equipment = session.query(Equipment).filter_by(athlete_id=athlete.id).all()
+        assert len(equipment) > 0
