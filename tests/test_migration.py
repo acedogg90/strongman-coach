@@ -519,3 +519,87 @@ def client(db_url):
     from fastapi.testclient import TestClient
     with TestClient(app) as c:
         yield c
+
+
+# ---------------------------------------------------------------------------
+# Test: Migration init bugs – athlete persistence
+# ---------------------------------------------------------------------------
+
+class TestMigrationInitBugs:
+    """Verify that early-return paths in migrate_from_training_entry
+    create an athlete and commit the session so data persists."""
+
+    def test_no_training_entry_table_creates_athlete(self, db_url):
+        """When TrainingEntry table does not exist, an athlete is created
+        and persisted (session.commit() called)."""
+        import app.database as db_mod
+        db_mod._engine = None
+        db_mod._session_factory = None
+
+        stats = migrate_from_training_entry(db_url)
+        assert stats["migrated"] is True
+
+        # Open a fresh session to verify the athlete was committed
+        factory = sessionmaker(bind=get_engine(db_url))
+        fresh_session = factory()
+        try:
+            athlete = fresh_session.query(Athlete).first()
+            assert athlete is not None, "Athlete should exist after migration with no TrainingEntry table"
+            assert athlete.name == "Athlete"
+            assert athlete.units == "lb"
+            assert athlete.plate_increment_lb == 2.5
+            assert athlete.dumbbell_max_lb == 120
+
+            # Verify settings were seeded
+            settings = fresh_session.query(Settings).all()
+            setting_keys = {s.key for s in settings}
+            assert "migration_version" in setting_keys
+            assert "units" in setting_keys
+        finally:
+            fresh_session.close()
+
+    def test_empty_training_entry_table_creates_athlete(self, db_url):
+        """When TrainingEntry table exists but is empty, an athlete is
+        created and persisted."""
+        import app.database as db_mod
+        db_mod._engine = None
+        db_mod._session_factory = None
+
+        # Create an empty TrainingEntry table
+        eng = get_engine(db_url)
+        factory = sessionmaker(bind=eng)
+        session = factory()
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS TrainingEntry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE,
+                exercise_name TEXT,
+                weight REAL,
+                reps INTEGER,
+                sets INTEGER,
+                notes TEXT
+            )
+        """))
+        session.commit()
+        session.close()
+
+        stats = migrate_from_training_entry(db_url)
+        assert stats["migrated"] is True
+
+        # Open a fresh session to verify the athlete was committed
+        fresh_session = factory()
+        try:
+            athlete = fresh_session.query(Athlete).first()
+            assert athlete is not None, "Athlete should exist after migration with empty TrainingEntry table"
+            assert athlete.name == "Athlete"
+            assert athlete.units == "lb"
+            assert athlete.plate_increment_lb == 2.5
+            assert athlete.dumbbell_max_lb == 120
+
+            # Verify settings were seeded
+            settings = fresh_session.query(Settings).all()
+            setting_keys = {s.key for s in settings}
+            assert "migration_version" in setting_keys
+            assert "units" in setting_keys
+        finally:
+            fresh_session.close()
