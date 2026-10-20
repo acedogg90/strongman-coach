@@ -603,3 +603,137 @@ class TestMigrationInitBugs:
             assert "units" in setting_keys
         finally:
             fresh_session.close()
+
+    def test_migration_with_rows_creates_athlete(self, db_url):
+        """When TrainingEntry table has rows, migration proceeds as before
+        with athlete created and persisted."""
+        import app.database as db_mod
+        db_mod._engine = None
+        db_mod._session_factory = None
+
+        # Create TrainingEntry table with data
+        eng = get_engine(db_url)
+        factory = sessionmaker(bind=eng)
+        session = factory()
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS TrainingEntry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE,
+                exercise_name TEXT,
+                weight REAL,
+                reps INTEGER,
+                sets INTEGER,
+                notes TEXT
+            )
+        """))
+        session.execute(text("""
+            INSERT INTO TrainingEntry (date, exercise_name, weight, reps, sets, notes)
+            VALUES ('2024-01-15', 'Bench Press', 225.0, 5, 3, 'Strong')
+        """))
+        session.commit()
+        session.close()
+
+        stats = migrate_from_training_entry(db_url)
+        assert stats["migrated"] is True
+        assert stats["training_entry_count"] == 1
+        assert stats["set_log_count"] == 3  # 3 sets
+
+        # Open a fresh session to verify athlete was committed
+        fresh_session = factory()
+        try:
+            athlete = fresh_session.query(Athlete).first()
+            assert athlete is not None, "Athlete should exist after migration with TrainingEntry data"
+            assert athlete.name == "Athlete"
+            assert athlete.units == "lb"
+
+            # Verify exercises were created
+            exercises = fresh_session.query(Exercise).all()
+            assert len(exercises) >= 1
+            names = {e.name for e in exercises}
+            assert "Bench Press" in names
+
+            # Verify settings were seeded
+            settings = fresh_session.query(Settings).all()
+            setting_keys = {s.key for s in settings}
+            assert "migration_version" in setting_keys
+            assert "units" in setting_keys
+        finally:
+            fresh_session.close()
+
+    def test_all_three_paths_commit_athlete(self, db_url):
+        """All three migration paths (no table, empty table, with data) must
+        create an athlete and call session.commit() so it persists in a
+        fresh session."""
+        import app.database as db_mod
+
+        # --- Path 1: No TrainingEntry table ---
+        db_mod._engine = None
+        db_mod._session_factory = None
+        stats1 = migrate_from_training_entry(db_url)
+        assert stats1["migrated"] is True
+        factory = sessionmaker(bind=get_engine(db_url))
+        s1 = factory()
+        athlete1 = s1.query(Athlete).first()
+        assert athlete1 is not None, "Path 1 (no table): athlete not persisted"
+        s1.close()
+
+        # --- Path 2: Empty TrainingEntry table ---
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_url2 = f"sqlite:///{f.name}"
+        db_mod._engine = None
+        db_mod._session_factory = None
+        eng2 = get_engine(db_url2)
+        s2_setup = sessionmaker(bind=eng2)()
+        s2_setup.execute(text("""
+            CREATE TABLE IF NOT EXISTS TrainingEntry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE,
+                exercise_name TEXT,
+                weight REAL,
+                reps INTEGER,
+                sets INTEGER,
+                notes TEXT
+            )
+        """))
+        s2_setup.commit()
+        s2_setup.close()
+
+        stats2 = migrate_from_training_entry(db_url2)
+        assert stats2["migrated"] is True
+        s2_fresh = sessionmaker(bind=get_engine(db_url2))()
+        athlete2 = s2_fresh.query(Athlete).first()
+        assert athlete2 is not None, "Path 2 (empty table): athlete not persisted"
+        s2_fresh.close()
+
+        # --- Path 3: TrainingEntry with rows ---
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_url3 = f"sqlite:///{f.name}"
+        db_mod._engine = None
+        db_mod._session_factory = None
+        eng3 = get_engine(db_url3)
+        s3_setup = sessionmaker(bind=eng3)()
+        s3_setup.execute(text("""
+            CREATE TABLE IF NOT EXISTS TrainingEntry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE,
+                exercise_name TEXT,
+                weight REAL,
+                reps INTEGER,
+                sets INTEGER,
+                notes TEXT
+            )
+        """))
+        s3_setup.execute(text("""
+            INSERT INTO TrainingEntry (date, exercise_name, weight, reps, sets, notes)
+            VALUES ('2024-01-15', 'Squat', 315.0, 5, 3, 'Heavy')
+        """))
+        s3_setup.commit()
+        s3_setup.close()
+
+        stats3 = migrate_from_training_entry(db_url3)
+        assert stats3["migrated"] is True
+        s3_fresh = sessionmaker(bind=get_engine(db_url3))()
+        athlete3 = s3_fresh.query(Athlete).first()
+        assert athlete3 is not None, "Path 3 (with data): athlete not persisted"
+        s3_fresh.close()
