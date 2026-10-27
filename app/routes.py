@@ -8,6 +8,7 @@ that work with the new schema.
 from __future__ import annotations
 
 import datetime
+import os
 import secrets
 from typing import Optional, List
 
@@ -117,8 +118,8 @@ from itsdangerous import URLSafeSerializer, BadSignature, SignatureExpired
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Secret key for signing session cookies (Decision 1: signed cookies, not JWT)
-# In production, this should come from an environment variable.
-_SECRET_KEY = secrets.token_hex(32)
+# Read from environment variable; fall back to a random key only for local dev.
+_SECRET_KEY = os.environ.get("SESSION_SECRET", secrets.token_hex(32))
 _session_serializer = URLSafeSerializer(_SECRET_KEY, salt="sc-session")
 
 # Session store: in-memory dict mapping session_id -> user_id
