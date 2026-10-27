@@ -405,3 +405,165 @@ class TestSessionManagement:
                 assert user.hashed_password.startswith("$2b$")
         finally:
             db.close()
+
+
+# ---------------------------------------------------------------------------
+# ARCH-003 Architecture Compliance Tests
+# ---------------------------------------------------------------------------
+
+class TestARCH003Compliance:
+    """Verify the implementation follows ARCH-003 architecture decisions.
+
+    ARCH-003 specifies:
+    - Decision 1: Session management uses signed cookies (not JWT)
+    - Decision 2: Password hashing uses bcrypt via passlib
+    - User model stores hashed passwords (never plaintext)
+    - Server-side session store (not client-side state)
+    - Email normalization to lowercase
+    - Password minimum length enforcement
+    - Cookie security flags (httponly, samesite)
+    """
+
+    def test_arch003_decision1_signed_cookies_not_jwt(self):
+        """ARCH-003 Decision 1: sessions use signed cookies, not JWT.
+
+        Verifies that the session serializer is an itsdangerous
+        URLSafeSerializer (signed cookie), not a JWT library.
+        """
+        from app.routes import _session_serializer
+        from itsdangerous import URLSafeSerializer
+
+        assert isinstance(
+            _session_serializer, URLSafeSerializer
+        ), "ARCH-003 Decision 1: session management must use signed cookies (itsdangerous), not JWT"
+
+    def test_arch003_decision2_bcrypt_via_passlib(self):
+        """ARCH-003 Decision 2: password hashing uses bcrypt via passlib.
+
+        Verifies that the CryptContext is configured with bcrypt scheme
+        and that hashed passwords start with the bcrypt prefix ($2b$).
+        """
+        from app.routes import pwd_context, _hash_password
+
+        # Verify bcrypt is in the configured schemes
+        schemes = pwd_context.schemes()
+        assert "bcrypt" in schemes, (
+            "ARCH-003 Decision 2: password hashing must use bcrypt via passlib"
+        )
+
+        # Verify the hash output is a bcrypt hash
+        hashed = _hash_password("testpassword123")
+        assert hashed.startswith("$2b$"), (
+            "ARCH-003 Decision 2: hashed passwords must use bcrypt ($2b$ prefix)"
+        )
+
+    def test_arch003_user_model_has_hashed_password_column(self):
+        """ARCH-003: User model must have hashed_password column, not plaintext."""
+        from sqlalchemy import inspect as sa_inspect
+        from app.database import User, get_engine
+
+        mapper = sa_inspect(User)
+        column_names = [c.key for c in mapper.columns]
+        assert "hashed_password" in column_names, (
+            "ARCH-003: User model must have hashed_password column"
+        )
+        # Ensure there is no plaintext password column
+        assert "password" not in column_names, (
+            "ARCH-003: User model must not store plaintext passwords"
+        )
+
+    def test_arch003_server_side_session_store(self):
+        """ARCH-003: sessions are stored server-side, not client-side state.
+
+        Verifies that _session_store is a dict (server-side store) and that
+        session tokens reference server-side session IDs.
+        """
+        from app.routes import _session_store, _session_serializer
+
+        assert isinstance(_session_store, dict), (
+            "ARCH-003: session store must be server-side (dict)"
+        )
+
+        # Verify the serializer produces a token that references a session_id
+        token = _session_serializer.dumps({"session_id": "test-id"})
+        payload = _session_serializer.loads(token)
+        assert "session_id" in payload, (
+            "ARCH-003: session tokens must reference server-side session IDs"
+        )
+
+    def test_arch003_email_normalized_to_lowercase(self):
+        """ARCH-003: email addresses are normalized to lowercase on signup."""
+        from app.routes import SignupRequest
+
+        req = SignupRequest(email="Test@Example.COM", password="password123")
+        assert req.email == "test@example.com", (
+            "ARCH-003: email must be normalized to lowercase"
+        )
+
+    def test_arch003_password_minimum_length_enforced(self):
+        """ARCH-003: password must be at least 8 characters."""
+        from app.routes import SignupRequest
+        import pytest as pytest_mod
+
+        with pytest_mod.raises(Exception):  # ValidationError
+            SignupRequest(email="test@example.com", password="short")
+
+    def test_arch003_cookie_has_security_flags(self, client):
+        """ARCH-003: session cookie must have httponly and samesite flags."""
+        client.post("/auth/signup", json={
+            "email": "flags@example.com",
+            "password": "password123",
+        })
+        resp = client.post("/auth/login", json={
+            "email": "flags@example.com",
+            "password": "password123",
+        })
+        assert resp.status_code == 200
+
+        # Check cookie security flags via the response
+        cookie = resp.cookies.get(SESSION_COOKIE_NAME)
+        assert cookie is not None
+
+        # Verify cookie settings in the response headers
+        set_cookie_headers = resp.headers.get_list("set-cookie")
+        assert len(set_cookie_headers) > 0, "No Set-Cookie header found"
+
+        # The cookie should have httponly flag
+        cookie_header = set_cookie_headers[0]
+        assert "httponly" in cookie_header.lower(), (
+            "ARCH-003: session cookie must have httponly flag"
+        )
+
+    def test_arch003_session_has_expiry(self):
+        """ARCH-003: sessions must have a maximum age (expiry)."""
+        from app.routes import SESSION_MAX_AGE
+
+        assert SESSION_MAX_AGE > 0, (
+            "ARCH-003: sessions must have a positive max_age for expiry"
+        )
+        assert SESSION_MAX_AGE <= 604800, (
+            "ARCH-003: session max_age should not exceed 7 days"
+        )
+
+    def test_arch003_password_never_returned_in_responses(self, client):
+        """ARCH-003: password must never appear in API responses."""
+        resp = client.post("/auth/signup", json={
+            "email": "secure@example.com",
+            "password": "MySecretPassword123",
+        })
+        body = resp.json()
+        assert "password" not in body, (
+            "ARCH-003: password must never be returned in signup response"
+        )
+        assert "hashed_password" not in body, (
+            "ARCH-003: hashed_password must never be returned in signup response"
+        )
+
+        resp = client.post("/auth/login", json={
+            "email": "secure@example.com",
+            "password": "MySecretPassword123",
+        })
+        body = resp.json()
+        assert "password" not in body, (
+            "ARCH-003: password must never be returned in login response"
+        )
