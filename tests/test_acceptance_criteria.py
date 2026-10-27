@@ -77,3 +77,34 @@ class TestWorkerDoubleFailure:
         assert worker.should_stop is True
         assert "test_bar" in worker.report_message
         assert "twice" in worker.report_message.lower() or "2" in worker.report_message
+
+
+# ---------------------------------------------------------------------------
+# Criterion: No existing tests regress (539 baseline tests still pass)
+# ---------------------------------------------------------------------------
+
+def test_test_suite_has_minimum_test_count():
+    """Verify the test suite has at least 539 tests (baseline regression check).
+
+    BACKEND-012 acceptance criterion 8: No existing tests regress.
+    The baseline was 539 tests; the suite must have at least that many.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    # Output ends with "N tests collected"
+    output = result.stdout.strip()
+    # Parse the count from the last line, e.g. "572 tests collected"
+    last_line = output.splitlines()[-1]
+    parts = last_line.split()
+    count = int(parts[0])
+    assert count >= 539, (
+        f"Test suite has {count} tests, below the 539-test baseline. "
+        "Existing tests may have been removed."
+    )
