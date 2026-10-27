@@ -1,8 +1,8 @@
 """
-Meta-tests for BACKEND-001 acceptance criteria.
+Meta-tests for BACKEND-001 and BACKEND-012 acceptance criteria.
 
-1. Verifies the full test suite has 407+ tests (criterion: "Full existing test
-   suite is back to green (407+ tests passing, 0 failing)").
+1. Verifies the full test suite has 539+ tests (criterion: "No existing tests
+   regress (539 baseline tests still pass)").
 2. Verifies the worker stops and reports if the same test fails twice in a row
    (criterion: "Worker stops and reports if the same test fails twice in a row").
 """
@@ -13,14 +13,14 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Criterion: Full existing test suite is back to green (407+ tests passing)
+# Criterion: No existing tests regress (539 baseline tests still pass)
 # ---------------------------------------------------------------------------
 
 class TestSuiteHealth:
-    """Meta-test: the total collected test count must be >= 407."""
+    """Meta-test: the total collected test count must be >= 539."""
 
     def test_test_suite_has_minimum_test_count(self):
-        """Fail if the collected test count drops below 407.
+        """Fail if the collected test count drops below 539.
 
         This guards against accidental deletion of tests or a regression that
         removes test coverage.  The harness itself runs the full suite, so this
@@ -45,9 +45,9 @@ class TestSuiteHealth:
                 if stripped.startswith("def test_"):
                     total_tests += 1
 
-        assert total_tests >= 407, (
+        assert total_tests >= 539, (
             f"Test suite has only {total_tests} tests, "
-            f"but the acceptance criterion requires >= 407"
+            f"but the acceptance criterion requires >= 539 baseline tests"
         )
 
 
