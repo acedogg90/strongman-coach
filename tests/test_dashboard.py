@@ -18,6 +18,7 @@ import datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import authenticate_client
 from app.routes import app, _get_session
 from app.database import (
     Base,
@@ -48,7 +49,9 @@ def client(db_url):
     db_mod._session_factory = None
     get_engine(db_url)
     reset_db(db_url)
-    return TestClient(app)
+    c = TestClient(app)
+    authenticate_client(c)
+    return c
 
 
 # ---------------------------------------------------------------------------

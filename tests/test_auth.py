@@ -567,3 +567,98 @@ class TestARCH003Compliance:
         assert "password" not in body, (
             "ARCH-003: password must never be returned in login response"
         )
+
+
+# ---------------------------------------------------------------------------
+# Criterion 1: All /api/* endpoints require authentication (return 401)
+# ---------------------------------------------------------------------------
+
+class TestAllApiEndpointsRequireAuth:
+    """BACKEND-008 criterion 1: every /api/* endpoint must return 401
+    when the client has no valid session cookie.
+
+    This test dynamically discovers all registered /api/* routes from the
+    FastAPI app and hits each one without authentication.  If any endpoint
+    returns a non-401 status, the test fails — proving that the endpoint
+    is missing the get_current_user dependency.
+    """
+
+    def test_all_api_endpoints_return_401_without_auth(self, client):
+        """Fail if any /api/* endpoint does not return 401 for unauthenticated requests.
+
+        Criterion: All existing /api/* endpoints require authentication
+        (return 401 without valid session).
+        """
+        # Collect all /api/* routes from the FastAPI app
+        api_routes = []
+        for route in app.routes:
+            if hasattr(route, "path") and route.path.startswith("/api/"):
+                api_routes.append(route)
+
+        assert len(api_routes) > 0, "No /api/* routes found in the app"
+
+        failures = []
+        for route in api_routes:
+            # Determine HTTP method
+            methods = getattr(route, "methods", None)
+            if methods:
+                for method in methods:
+                    if method == "HEAD":
+                        continue
+                    resp = client.request(method, route.path)
+                    if resp.status_code != 401:
+                        failures.append(
+                            f"{method} {route.path} returned {resp.status_code} "
+                            f"instead of 401"
+                        )
+            else:
+                # Fallback: try GET
+                resp = client.get(route.path)
+                if resp.status_code != 401:
+                    failures.append(
+                        f"GET {route.path} returned {resp.status_code} "
+                        f"instead of 401"
+                    )
+
+        assert not failures, (
+            f"The following /api/* endpoints did not return 401 without auth:\n"
+            + "\n".join(failures)
+        )
+
+    def test_public_pages_accessible_without_auth(self, client):
+        """GET / and GET /log.html must remain accessible without authentication.
+
+        Criterion: GET / and GET /log.html remain accessible without auth (public pages).
+        """
+        resp_root = client.get("/")
+        assert resp_root.status_code != 401, (
+            "GET / should be accessible without authentication"
+        )
+
+        resp_log = client.get("/log.html")
+        assert resp_log.status_code != 401, (
+            "GET /log.html should be accessible without authentication"
+        )
+
+    def test_auth_endpoints_accessible_without_auth(self, client):
+        """POST /auth/signup and POST /auth/login must not require authentication.
+
+        These are the entry points for new and returning users.
+        """
+        # Signup should work without auth (returns 409 if user exists, not 401)
+        resp = client.post(
+            "/auth/signup",
+            json={"email": "criterion-test@example.com", "password": "password123"},
+        )
+        assert resp.status_code != 401, (
+            "POST /auth/signup should be accessible without authentication"
+        )
+
+        # Login should work without auth
+        resp = client.post(
+            "/auth/login",
+            json={"email": "criterion-test@example.com", "password": "password123"},
+        )
+        assert resp.status_code != 401, (
+            "POST /auth/login should be accessible without authentication"
+        )

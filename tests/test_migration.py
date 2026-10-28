@@ -517,7 +517,9 @@ def client(db_url):
 
     from app.routes import app
     from fastapi.testclient import TestClient
+    from tests.conftest import authenticate_client
     with TestClient(app) as c:
+        authenticate_client(c)
         yield c
 
 

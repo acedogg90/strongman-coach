@@ -12,7 +12,7 @@ import os
 import secrets
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Depends
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
@@ -146,6 +146,39 @@ def _create_session_token(user_id: int) -> str:
     _session_store[session_id] = user_id
     token = _session_serializer.dumps({"session_id": session_id})
     return token
+
+
+# ---------------------------------------------------------------------------
+# get_current_user dependency: extracts and validates the session cookie
+# ---------------------------------------------------------------------------
+
+def get_current_user(request: Request) -> User:
+    """FastAPI dependency that returns the current authenticated User.
+
+    Raises HTTPException 401 if no valid session cookie is present.
+    """
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = _session_serializer.loads(token)
+    except (BadSignature, SignatureExpired):
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+    session_id = payload.get("session_id")
+    user_id = _session_store.get(session_id)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Session not found")
+
+    db = _get_session()
+    try:
+        user = db.query(User).filter_by(id=user_id).first()
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +324,7 @@ def auth_me(request: Request):
 
 
 @app.get("/api/prescriptions/today")
-def get_today_prescriptions():
+def get_today_prescriptions(current_user: User = Depends(get_current_user)):
     """Get today's session prescriptions with computed loads.
 
     Returns the active session's prescriptions with warm-up and back-off loads
@@ -353,7 +386,7 @@ def get_today_prescriptions():
 
 
 @app.post("/api/sync")
-def sync_offline_sets(req: List[dict]):
+def sync_offline_sets(req: List[dict], current_user: User = Depends(get_current_user)):
     """Sync a batch of offline-queued sets.
 
     Accepts a list of set log requests and processes them all in one transaction.
@@ -631,7 +664,7 @@ def _get_session():
 # ---------------------------------------------------------------------------
 
 @app.post("/log")
-def log_entry(entry: TrainingEntryCreate):
+def log_entry(entry: TrainingEntryCreate, current_user: User = Depends(get_current_user)):
     """Log a new training entry. Creates exercise, prescription, and set_log rows."""
     session = _get_session()
     try:
@@ -738,7 +771,7 @@ def log_entry(entry: TrainingEntryCreate):
 # ---------------------------------------------------------------------------
 
 @app.post("/warmups")
-def generate_warmup_sets(req: WarmupRequest):
+def generate_warmup_sets(req: WarmupRequest, current_user: User = Depends(get_current_user)):
     """Generate warm-up sets and store them as prescriptions in the session.
 
     Warm-ups are auto-generated as a progression toward the top-set weight:
@@ -851,7 +884,7 @@ def generate_warmup_sets(req: WarmupRequest):
 # ---------------------------------------------------------------------------
 
 @app.post("/backoffs")
-def generate_backoff_sets(req: BackoffRequest):
+def generate_backoff_sets(req: BackoffRequest, current_user: User = Depends(get_current_user)):
     """Generate back-off sets and store them as prescriptions in the session.
 
     Back-off sets calculate weight as top_set_weight × (1 - drop_pct/100)
@@ -981,7 +1014,7 @@ def generate_backoff_sets(req: BackoffRequest):
 # ---------------------------------------------------------------------------
 
 @app.get("/history")
-def get_history(exercise: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None):
+def get_history(exercise: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None, current_user: User = Depends(get_current_user)):
     """Get training history from set_log, joined with prescriptions and exercises."""
     session = _get_session()
     try:
@@ -1029,7 +1062,7 @@ def get_history(exercise: Optional[str] = None, date_from: Optional[str] = None,
 # ---------------------------------------------------------------------------
 
 @app.patch("/edit/{entry_id}")
-def edit_entry(entry_id: int, updates: TrainingEntryUpdate):
+def edit_entry(entry_id: int, updates: TrainingEntryUpdate, current_user: User = Depends(get_current_user)):
     """Edit an existing set_log entry."""
     session = _get_session()
     try:
@@ -1065,7 +1098,7 @@ def edit_entry(entry_id: int, updates: TrainingEntryUpdate):
 # ---------------------------------------------------------------------------
 
 @app.delete("/delete/{entry_id}")
-def delete_entry(entry_id: int):
+def delete_entry(entry_id: int, current_user: User = Depends(get_current_user)):
     """Delete a set_log entry and its prescription."""
     session = _get_session()
     try:
@@ -1098,7 +1131,7 @@ def delete_entry(entry_id: int):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/sessions")
-def create_session(req: SessionCreate):
+def create_session(req: SessionCreate, current_user: User = Depends(get_current_user)):
     """Create a new session with the correct day type and block phase."""
     db = _get_session()
     try:
@@ -1198,7 +1231,7 @@ def create_session(req: SessionCreate):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/sessions/{session_id}/sets")
-def log_set(session_id: int, req: SetLogRequest):
+def log_set(session_id: int, req: SetLogRequest, current_user: User = Depends(get_current_user)):
     """Log a set with exercise, weight, reps, rpe, set_type.
 
     Supports idempotency: if the same idempotency_key is sent twice,
@@ -1336,7 +1369,7 @@ def log_set(session_id: int, req: SetLogRequest):
 # ---------------------------------------------------------------------------
 
 @app.patch("/api/sessions/{session_id}/complete")
-def complete_session(session_id: int, req: SessionCompleteRequest = None):
+def complete_session(session_id: int, req: SessionCompleteRequest = None, current_user: User = Depends(get_current_user)):
     """Mark a session complete and trigger adjustment rule checks."""
     db = _get_session()
     try:
@@ -1467,6 +1500,7 @@ def get_sessions(
     date_to: Optional[str] = None,
     day_type: Optional[str] = None,
     block_phase: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
 ):
     """Get session history filtered by date range, day type, or block phase."""
     db = _get_session()
@@ -1585,7 +1619,7 @@ class ImportRequest(BaseModel):
 
 
 @app.get("/api/settings")
-def get_settings():
+def get_settings(current_user: User = Depends(get_current_user)):
     """Get all settings for the athlete."""
     from app.strength.settings import load_all_settings, ensure_defaults
     db = _get_session()
@@ -1600,7 +1634,7 @@ def get_settings():
 
 
 @app.patch("/api/settings")
-def update_setting(req: SettingRequest):
+def update_setting(req: SettingRequest, current_user: User = Depends(get_current_user)):
     """Update a single setting."""
     from app.strength.settings import set_setting
     db = _get_session()
@@ -1616,7 +1650,7 @@ def update_setting(req: SettingRequest):
 
 
 @app.patch("/api/settings/bulk")
-def bulk_update_settings(req: dict):
+def bulk_update_settings(req: dict, current_user: User = Depends(get_current_user)):
     """Update multiple settings at once."""
     from app.strength.settings import save_all_settings, VALID_KEYS
     db = _get_session()
@@ -1634,7 +1668,7 @@ def bulk_update_settings(req: dict):
 
 
 @app.get("/api/settings/export/csv")
-def export_settings_csv():
+def export_settings_csv(current_user: User = Depends(get_current_user)):
     """Export all settings as CSV."""
     from app.strength.settings import load_all_settings, ensure_defaults
     from fastapi.responses import Response
@@ -1661,7 +1695,7 @@ def export_settings_csv():
 
 
 @app.post("/api/settings/import/csv")
-def import_settings_csv(req: ImportRequest):
+def import_settings_csv(req: ImportRequest, current_user: User = Depends(get_current_user)):
     """Import settings from CSV backup."""
     from app.strength.settings import save_all_settings, VALID_KEYS
     import csv
@@ -1685,7 +1719,7 @@ def import_settings_csv(req: ImportRequest):
 
 
 @app.get("/api/athlete")
-def get_athlete():
+def get_athlete(current_user: User = Depends(get_current_user)):
     """Get athlete profile."""
     from app.database import Athlete
     db = _get_session()
@@ -1712,7 +1746,7 @@ def get_athlete():
 
 
 @app.patch("/api/athlete")
-def update_athlete(req: AthleteUpdate):
+def update_athlete(req: AthleteUpdate, current_user: User = Depends(get_current_user)):
     """Update athlete profile."""
     from app.database import Athlete
     db = _get_session()
@@ -1757,7 +1791,7 @@ def update_athlete(req: AthleteUpdate):
 
 
 @app.get("/api/bodyweight")
-def get_bodyweight():
+def get_bodyweight(current_user: User = Depends(get_current_user)):
     """Get all bodyweight entries."""
     from app.database import Bodyweight, Athlete
     db = _get_session()
@@ -1789,7 +1823,7 @@ def get_bodyweight():
 
 
 @app.post("/api/bodyweight")
-def add_bodyweight(req: BodyweightEntry):
+def add_bodyweight(req: BodyweightEntry, current_user: User = Depends(get_current_user)):
     """Log a bodyweight entry."""
     from app.database import Bodyweight, Athlete
     import datetime as dt
@@ -1830,7 +1864,7 @@ def add_bodyweight(req: BodyweightEntry):
 
 
 @app.get("/api/export/csv")
-def export_csv():
+def export_csv(current_user: User = Depends(get_current_user)):
     """Export all session data as CSV."""
     from app.strength.settings import export_sessions_csv
     from fastapi.responses import Response
@@ -1849,7 +1883,7 @@ def export_csv():
 
 
 @app.post("/api/import/csv")
-def import_csv(req: ImportRequest):
+def import_csv(req: ImportRequest, current_user: User = Depends(get_current_user)):
     """Import session data from CSV backup."""
     from app.strength.settings import import_sessions_csv
     db = _get_session()
@@ -1869,7 +1903,7 @@ def import_csv(req: ImportRequest):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/dashboard")
-def get_dashboard():
+def get_dashboard(current_user: User = Depends(get_current_user)):
     """Return dashboard data: cycle info, next workout, e1RM trends,
     recent sessions, pain flags, and deload warnings."""
     db = _get_session()
