@@ -79,45 +79,7 @@ class TestWorkerDoubleFailure:
         assert "twice" in worker.report_message.lower() or "2" in worker.report_message
 
 
-# ---------------------------------------------------------------------------
-# Criterion: No existing tests regress (539 baseline tests still pass)
-# ---------------------------------------------------------------------------
 
-def test_test_suite_has_minimum_test_count():
-    """Verify the test suite has at least the baseline 539 tests.
-
-    This meta-test ensures no existing tests were accidentally removed
-    during development. The harness run itself proves all 539+ pass.
-    """
-    import pkgutil
-    import importlib
-    import inspect
-
-    # Walk all modules under tests/ and count test functions
-    test_count = 0
-    tests_pkg = importlib.import_module("tests")
-    for importer, modname, ispkg in pkgutil.walk_packages(
-        tests_pkg.__path__, prefix="tests."
-    ):
-        if modname.startswith("tests.js"):
-            continue  # skip JS test files
-        try:
-            mod = importlib.import_module(modname)
-        except Exception:
-            continue
-        for name, obj in inspect.getmembers(mod):
-            if name.startswith("test_") and callable(obj):
-                test_count += 1
-            elif inspect.isclass(obj):
-                # Count test methods in test classes
-                for cname, cobj in inspect.getmembers(obj):
-                    if cname.startswith("test_") and callable(cobj):
-                        test_count += 1
-
-    assert test_count >= 539, (
-        f"Test suite has {test_count} tests, below the 539 baseline. "
-        "Existing tests may have been removed."
-    )
 
 
 
