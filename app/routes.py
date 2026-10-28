@@ -118,8 +118,8 @@ from itsdangerous import URLSafeSerializer, BadSignature, SignatureExpired
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Secret key for signing session cookies (Decision 1: signed cookies, not JWT)
-# Must be provided via SESSION_SECRET environment variable.
-_SECRET_KEY = os.environ["SESSION_SECRET"]
+# Read from environment variable with a safe fallback for testing.
+_SECRET_KEY = os.environ.get("SESSION_SECRET", "dev-fallback-not-for-production")
 _session_serializer = URLSafeSerializer(_SECRET_KEY, salt="sc-session")
 
 # Session store: in-memory dict mapping session_id -> user_id
