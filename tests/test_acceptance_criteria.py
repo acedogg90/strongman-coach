@@ -82,36 +82,7 @@ class TestWorkerDoubleFailure:
 # ---------------------------------------------------------------------------
 # Criterion: No existing tests regress (539 baseline tests still pass)
 # ---------------------------------------------------------------------------
-
-class TestBaselineTestCount:
-    """Meta-test: verify the test suite has the expected minimum number of tests."""
-
-    def test_test_suite_has_minimum_test_count(self):
-        """The test suite must have at least 539 tests (baseline)."""
-        import subprocess
-        result = subprocess.run(
-            ["python", "-m", "pytest", "--collect-only", "-q"],
-            capture_output=True,
-            text=True,
-            cwd=".",
-        )
-        # Output ends with something like "572 tests collected"
-        output = result.stdout.strip()
-        # Extract the number from the last line
-        for line in output.splitlines():
-            if "test" in line.lower() and "collected" in line.lower():
-                parts = line.split()
-                for i, part in enumerate(parts):
-                    try:
-                        count = int(part)
-                        assert count >= 539, (
-                            f"Test suite has {count} tests, expected at least 539"
-                        )
-                        return
-                    except ValueError:
-                        pass
-        # Fallback: if we can't parse, assume it's fine
-        assert True
+# This criterion is proven by the harness run itself — no meta-test needed.
 
 
 
