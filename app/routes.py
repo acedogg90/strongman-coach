@@ -148,25 +148,6 @@ def _create_session_token(user_id: int) -> str:
     return token
 
 
-def _get_current_user_id(response: Response) -> Optional[int]:
-    """Extract the current user ID from the session cookie.
-    
-    Returns None if no valid session cookie is present.
-    """
-    session_token = response.cookies.get(SESSION_COOKIE_NAME)
-    if not session_token:
-        return None
-    try:
-        data = _session_serializer.loads(session_token, max_age=SESSION_MAX_AGE)
-        session_id = data.get("session_id")
-        user_id = _session_store.get(session_id)
-        if user_id is None:
-            return None
-        return user_id
-    except (BadSignature, SignatureExpired):
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Auth Pydantic models
 # ---------------------------------------------------------------------------
