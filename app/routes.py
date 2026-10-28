@@ -83,6 +83,45 @@ def log_page():
     )
 
 
+@app.get("/login.html")
+def login_page():
+    """Serve the login page."""
+    import os
+    template_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "login.html")
+    if os.path.exists(template_path):
+        return FileResponse(template_path)
+    return HTMLResponse(
+        content="<html><body><h1>Login</h1><p>frontend/login.html not found</p></body></html>",
+        status_code=503,
+    )
+
+
+@app.get("/signup.html")
+def signup_page():
+    """Serve the signup page."""
+    import os
+    template_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "signup.html")
+    if os.path.exists(template_path):
+        return FileResponse(template_path)
+    return HTMLResponse(
+        content="<html><body><h1>Sign Up</h1><p>frontend/signup.html not found</p></body></html>",
+        status_code=503,
+    )
+
+
+@app.get("/programs.html")
+def programs_page():
+    """Serve the program template selection page."""
+    import os
+    template_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "programs.html")
+    if os.path.exists(template_path):
+        return FileResponse(template_path)
+    return HTMLResponse(
+        content="<html><body><h1>Programs</h1><p>frontend/programs.html not found</p></body></html>",
+        status_code=503,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Static file serving for dashboard assets
 # ---------------------------------------------------------------------------
@@ -1124,6 +1163,91 @@ def delete_entry(entry_id: int, current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail="Failed to delete entry")
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/programs — Create a new program from a template
+# ---------------------------------------------------------------------------
+
+class ProgramCreateRequest(BaseModel):
+    """Request to create a new program from a template."""
+    template: str  # general, competition, maintenance
+
+
+class ProgramCreateResponse(BaseModel):
+    """Response after creating a program."""
+    program_id: int
+    name: str
+    phase: str
+
+
+@app.post("/api/programs")
+def create_program(req: ProgramCreateRequest, current_user: User = Depends(get_current_user)):
+    """Create a new program from a template and activate it."""
+    valid_templates = ("general", "competition", "maintenance")
+    if req.template not in valid_templates:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid template. Choose from: {', '.join(valid_templates)}",
+        )
+
+    template_names = {
+        "general": "General Preparation",
+        "competition": "Competition Prep",
+        "maintenance": "Maintenance",
+    }
+
+    db = _get_session()
+    try:
+        today = datetime.date.today()
+
+        # Deactivate any existing active programs
+        db.query(Program).filter_by(is_active=True).update({"is_active": False})
+
+        # Create new program
+        program = Program(
+            athlete_id=current_user.id,
+            name=template_names[req.template],
+            phase="accumulation",
+            start_date=today,
+            is_active=True,
+        )
+        db.add(program)
+        db.flush()
+
+        # Create initial block
+        block = Block(
+            program_id=program.id,
+            block_number=1,
+            start_date=today,
+        )
+        db.add(block)
+        db.flush()
+
+        # Create initial cycle
+        cycle = Cycle(
+            block_id=block.id,
+            cycle_number=1,
+            start_date=today,
+        )
+        db.add(cycle)
+        db.flush()
+
+        db.commit()
+
+        return ProgramCreateResponse(
+            program_id=program.id,
+            name=program.name,
+            phase=program.phase,
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create program")
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

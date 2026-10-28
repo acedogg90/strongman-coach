@@ -5,71 +5,130 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Strongman Coach — Dashboard</title>
   <link rel="stylesheet" href="/static/css/dashboard.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <header id="app-header">
     <h1>Strongman Coach</h1>
-    <button id="refresh-btn" title="Refresh dashboard">↻</button>
+    <nav>
+      <a href="/programs.html">Programs</a>
+      <a href="/log.html">Log</a>
+      <a href="#" id="logout-link">Logout</a>
+    </nav>
   </header>
 
-  <main id="dashboard">
-    <!-- Cycle / Block Phase -->
-    <section id="cycle-info" class="card">
-      <h2>Current Program</h2>
-      <div class="cycle-row">
-        <span>Cycle: <strong id="cycle-number">—</strong></span>
-        <span>Phase: <strong id="block-phase">—</strong></span>
-      </div>
-    </section>
+  <!-- Home page shown when not authenticated -->
+  <div id="home-page">
+    <main>
+      <section class="card" style="text-align:center; padding:2rem 1rem;">
+        <h2 style="border:none; margin-bottom:1rem;">Welcome</h2>
+        <p id="status-msg" style="margin-bottom:1.5rem; color:#aaa;">Checking authentication…</p>
+        <div id="auth-buttons" style="display:none; gap:0.75rem; flex-direction:column;">
+          <a href="/login.html" class="btn btn-primary" style="display:block; text-decoration:none;">Login</a>
+          <a href="/signup.html" class="btn btn-secondary" style="display:block; text-decoration:none;">Sign Up</a>
+        </div>
+      </section>
+    </main>
+  </div>
 
-    <!-- Next Workout -->
-    <section id="next-workout" class="card">
-      <h2>Next Workout</h2>
-      <div id="next-workout-content">
-        <span id="next-day-label">—</span>
-        <span id="next-date">—</span>
-      </div>
-    </section>
+  <!-- Dashboard shown when authenticated -->
+  <div id="dashboard-page" style="display:none;">
+    <main>
+      <!-- Cycle / Block info -->
+      <section class="card" id="cycle-info">
+        <h2>Cycle &amp; Block</h2>
+        <p>Cycle <span id="cycle-number">—</span> · <span id="block-phase">—</span></p>
+      </section>
 
-    <!-- e1RM Trend Charts -->
-    <section id="e1rm-trends" class="card">
-      <h2>e1RM Trends</h2>
-      <div class="chart-container">
-        <canvas id="deadlift-chart"></canvas>
-      </div>
-      <div class="chart-container">
-        <canvas id="ohp-chart"></canvas>
-      </div>
-      <div class="chart-container">
-        <canvas id="squat-chart"></canvas>
-      </div>
-    </section>
+      <!-- Next workout -->
+      <section class="card" id="next-workout">
+        <h2>Next Workout</h2>
+        <p><span id="next-day-label">—</span> <span id="next-date"></span></p>
+      </section>
 
-    <!-- Recent Sessions -->
-    <section id="recent-sessions" class="card">
-      <h2>Recent Sessions</h2>
-      <ul id="sessions-list"></ul>
-    </section>
+      <!-- e1RM trends -->
+      <section class="card" id="e1rm-trends">
+        <h2>e1RM Trends</h2>
+        <div class="chart-grid">
+          <div class="chart-card">
+            <canvas id="deadlift-chart"></canvas>
+          </div>
+          <div class="chart-card">
+            <canvas id="ohp-chart"></canvas>
+          </div>
+          <div class="chart-card">
+            <canvas id="squat-chart"></canvas>
+          </div>
+        </div>
+      </section>
 
-    <!-- Pain Flags -->
-    <section id="pain-flags" class="card">
-      <h2>Pain Flags</h2>
-      <ul id="pain-flags-list"></ul>
-      <p id="no-pain-flags" class="hidden">No active pain flags.</p>
-    </section>
+      <!-- Recent sessions -->
+      <section class="card" id="recent-sessions">
+        <h2>Recent Sessions</h2>
+        <ul id="sessions-list"></ul>
+      </section>
 
-    <!-- Deload Warning -->
-    <section id="deload-warning" class="card warning hidden">
-      <h2>⚠ Deload Warning</h2>
-      <p id="deload-message"></p>
-    </section>
-  </main>
+      <!-- Pain flags -->
+      <section class="card" id="pain-flags">
+        <h2>Pain Flags</h2>
+        <ul id="pain-flags-list"></ul>
+        <p id="no-pain-flags" class="hidden">No pain flags recorded.</p>
+      </section>
+
+      <!-- Deload warning -->
+      <section class="card" id="deload-warning">
+        <h2>Deload Warning</h2>
+        <p id="deload-message">—</p>
+      </section>
+    </main>
+  </div>
 
   <footer>
     <p>Strongman Coach — Not medical advice.</p>
   </footer>
 
   <script src="/static/js/dashboard.js"></script>
+  <script>
+    (async function () {
+      const homePage = document.getElementById('home-page');
+      const dashboardPage = document.getElementById('dashboard-page');
+      const statusMsg = document.getElementById('status-msg');
+      const authButtons = document.getElementById('auth-buttons');
+
+      try {
+        const resp = await fetch('/auth/me', { credentials: 'same-origin' });
+        if (resp.ok) {
+          // Authenticated — show dashboard
+          homePage.style.display = 'none';
+          dashboardPage.style.display = 'block';
+          // Load dashboard data
+          if (typeof loadDashboard === 'function') {
+            await loadDashboard();
+          }
+          return;
+        }
+      } catch (_) {
+        // Network error — show home page
+      }
+
+      // Not authenticated — show home page
+      dashboardPage.style.display = 'none';
+      homePage.style.display = 'block';
+      statusMsg.textContent = 'Please log in or create an account.';
+      authButtons.style.display = 'flex';
+    })();
+
+    // Logout handler
+    document.getElementById('logout-link').addEventListener('click', async function (e) {
+      e.preventDefault();
+      try {
+        await fetch('/auth/logout', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+      } catch (_) {}
+      window.location.href = '/login.html';
+    });
+  </script>
 </body>
 </html>

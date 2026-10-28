@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Strongman Coach — Sign Up</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+  <header id="app-header">
+    <h1>Strongman Coach</h1>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Sign Up</h2>
+      <form id="signup-form" action="/auth/signup" method="post">
+        <div style="margin-bottom:1rem;">
+          <label for="email" style="display:block; margin-bottom:0.25rem; font-size:0.9rem;">Email</label>
+          <input type="email" id="email" name="email" required
+                 style="width:100%; padding:0.6rem; background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:1rem;">
+        </div>
+        <div style="margin-bottom:1rem;">
+          <label for="password" style="display:block; margin-bottom:0.25rem; font-size:0.9rem;">Password</label>
+          <input type="password" id="password" name="password" required minlength="8"
+                 style="width:100%; padding:0.6rem; background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:1rem;">
+        </div>
+        <div style="margin-bottom:1rem;">
+          <label for="confirm_password" style="display:block; margin-bottom:0.25rem; font-size:0.9rem;">Confirm Password</label>
+          <input type="password" id="confirm_password" name="confirm_password" required minlength="8"
+                 style="width:100%; padding:0.6rem; background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:1rem;">
+        </div>
+        <div id="error-msg" class="hidden" style="color:var(--highlight); margin-bottom:1rem; font-size:0.9rem;"></div>
+        <button type="submit" class="btn btn-primary">Sign Up</button>
+      </form>
+      <p style="margin-top:1rem; font-size:0.85rem; color:#aaa;">
+        Already have an account? <a href="/login.html" style="color:var(--highlight);">Log in</a>
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Strongman Coach — Not medical advice.</p>
+  </footer>
+
+  <script>
+    (function () {
+      const form = document.getElementById('signup-form');
+      const errorDiv = document.getElementById('error-msg');
+
+      // Show any error from URL params (after a redirect)
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('error')) {
+        errorDiv.textContent = decodeURIComponent(params.get('error'));
+        errorDiv.classList.remove('hidden');
+      }
+
+      form.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        errorDiv.classList.add('hidden');
+
+        const email = document.getElementById('email').value.trim();
+        const password = document.getElementById('password').value;
+        const confirmPassword = document.getElementById('confirm_password').value;
+
+        // Client-side validation
+        if (password !== confirmPassword) {
+          errorDiv.textContent = 'Passwords do not match.';
+          errorDiv.classList.remove('hidden');
+          return;
+        }
+
+        try {
+          const resp = await fetch('/auth/signup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ email, password }),
+          });
+
+          if (resp.ok) {
+            // After signup, redirect to login (or auto-login if backend sets cookie)
+            window.location.href = '/login.html';
+          } else {
+            const data = await resp.json().catch(() => ({}));
+            errorDiv.textContent = data.detail || 'Sign up failed. Please try again.';
+            errorDiv.classList.remove('hidden');
+          }
+        } catch (err) {
+          errorDiv.textContent = 'Network error. Please try again.';
+          errorDiv.classList.remove('hidden');
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
