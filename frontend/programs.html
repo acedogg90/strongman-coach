@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Strongman Coach — Programs</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+  <header id="app-header">
+    <h1>Strongman Coach</h1>
+    <nav style="display:flex; gap:0.5rem;">
+      <a href="/" style="color:var(--text); text-decoration:none; font-size:0.9rem;">Dashboard</a>
+      <a href="/auth/logout" id="logout-link" style="color:var(--highlight); text-decoration:none; font-size:0.9rem;">Logout</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Program Templates</h2>
+      <p style="font-size:0.9rem; color:#aaa; margin-bottom:1rem;">
+        Choose a program template to start training. Each program follows a 4-day cycle
+        (A: Deadlift, B: Overhead, C: Squat, D: Events) across Accumulation,
+        Intensification, and Realization blocks.
+      </p>
+
+      <div id="program-list">
+        <!-- Program templates rendered here -->
+        <div class="card" style="background:var(--accent); border:1px solid var(--highlight); cursor:pointer;"
+             data-program="general">
+          <h3 style="font-size:1rem; margin-bottom:0.5rem;">General Preparation</h3>
+          <p style="font-size:0.85rem; color:#ccc;">
+            Balanced strength and conditioning. Ideal for building a solid foundation
+            across all movement patterns.
+          </p>
+        </div>
+
+        <div class="card" style="background:var(--accent); border:1px solid var(--highlight); cursor:pointer;"
+             data-program="competition">
+          <h3 style="font-size:1rem; margin-bottom:0.5rem;">Competition Prep</h3>
+          <p style="font-size:0.85rem; color:#ccc;">
+            Peaked programming designed to maximize performance for upcoming
+            strongman competitions.
+          </p>
+        </div>
+
+        <div class="card" style="background:var(--accent); border:1px solid var(--highlight); cursor:pointer;"
+             data-program="maintenance">
+          <h3 style="font-size:1rem; margin-bottom:0.5rem;">Maintenance</h3>
+          <p style="font-size:0.85rem; color:#ccc;">
+            Lower volume program to maintain strength during off-season or
+            when recovery is a priority.
+          </p>
+        </div>
+      </div>
+
+      <div id="error-msg" class="hidden" style="color:var(--highlight); margin-top:1rem; font-size:0.9rem;"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Strongman Coach — Not medical advice.</p>
+  </footer>
+
+  <script>
+    (function () {
+      const errorDiv = document.getElementById('error-msg');
+
+      // Check authentication before allowing program selection
+      async function checkAuth() {
+        try {
+          const resp = await fetch('/auth/me', { credentials: 'same-origin' });
+          if (!resp.ok) {
+            window.location.href = '/login.html';
+            return false;
+          }
+          return true;
+        } catch (_) {
+          window.location.href = '/login.html';
+          return false;
+        }
+      }
+
+      // Handle program selection
+      document.querySelectorAll('[data-program]').forEach(function (card) {
+        card.addEventListener('click', async function () {
+          const programType = this.getAttribute('data-program');
+
+          const authenticated = await checkAuth();
+          if (!authenticated) return;
+
+          errorDiv.classList.add('hidden');
+
+          try {
+            const resp = await fetch('/api/programs', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ template: programType }),
+            });
+
+            if (resp.ok) {
+              // Redirect to dashboard with new program loaded
+              window.location.href = '/';
+            } else {
+              const data = await resp.json().catch(() => ({}));
+              errorDiv.textContent = data.detail || 'Failed to create program.';
+              errorDiv.classList.remove('hidden');
+            }
+          } catch (err) {
+            errorDiv.textContent = 'Network error. Please try again.';
+            errorDiv.classList.remove('hidden');
+          }
+        });
+      });
+
+      // Logout handler
+      document.getElementById('logout-link').addEventListener('click', async function (e) {
+        e.preventDefault();
+        try {
+          await fetch('/auth/logout', {
+            method: 'POST',
+            credentials: 'same-origin',
+          });
+        } catch (_) {}
+        window.location.href = '/login.html';
+      });
+    })();
+  </script>
+</body>
+</html>

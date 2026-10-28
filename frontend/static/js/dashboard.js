@@ -222,13 +222,23 @@
   // Init
   // ---------------------------------------------------------------------------
 
-  document.addEventListener('DOMContentLoaded', renderDashboard);
-
-  document.getElementById('refresh-btn').addEventListener('click', renderDashboard);
-
   // Expose for testing / external refresh triggers
   window.dashboard = {
     renderDashboard,
     fetchDashboardData,
   };
+  window.loadDashboard = renderDashboard;
+
+  document.addEventListener('DOMContentLoaded', function () {
+    // Only render if dashboard sections are visible
+    const dashboardPage = document.getElementById('dashboard-page');
+    if (dashboardPage && dashboardPage.style.display !== 'none') {
+      renderDashboard();
+    }
+  });
+
+  var refreshBtn = document.getElementById('refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', renderDashboard);
+  }
 })();
