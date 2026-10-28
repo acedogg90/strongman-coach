@@ -8,11 +8,13 @@ that work with the new schema.
 from __future__ import annotations
 
 import datetime
+import os
+import secrets
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 
 from app.database import (
@@ -24,6 +26,7 @@ from app.database import (
     Program,
     Session as DBSession,
     SetLog,
+    User,
     get_engine,
     get_session_factory,
     init_db,
@@ -102,6 +105,189 @@ def serve_dashboard_js():
     if os.path.exists(js_path):
         return FileResponse(js_path, media_type="application/javascript")
     return HTMLResponse(content="", status_code=404)
+
+
+# ---------------------------------------------------------------------------
+# Authentication: User model, password hashing, session management
+# ---------------------------------------------------------------------------
+
+from passlib.context import CryptContext
+from itsdangerous import URLSafeSerializer, BadSignature, SignatureExpired
+
+# Password hashing via passlib/bcrypt (Decision 2)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Secret key for signing session cookies (Decision 1: signed cookies, not JWT)
+# Read from environment variable with a safe fallback for testing.
+_SECRET_KEY = os.environ.get("SESSION_SECRET", "dev-fallback-not-for-production")
+_session_serializer = URLSafeSerializer(_SECRET_KEY, salt="sc-session")
+
+# Session store: in-memory dict mapping session_id -> user_id
+# In production, use Redis or DB-backed store.
+_session_store: dict[str, int] = {}
+
+SESSION_COOKIE_NAME = "sc_session"
+SESSION_MAX_AGE = 86400  # 24 hours
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password using bcrypt via passlib."""
+    return pwd_context.hash(password)
+
+
+def _verify_password(password: str, hashed: str) -> bool:
+    """Verify a password against a bcrypt hash."""
+    return pwd_context.verify(password, hashed)
+
+
+def _create_session_token(user_id: int) -> str:
+    """Create a signed session token for a user."""
+    session_id = secrets.token_hex(16)
+    _session_store[session_id] = user_id
+    token = _session_serializer.dumps({"session_id": session_id})
+    return token
+
+
+# ---------------------------------------------------------------------------
+# Auth Pydantic models
+# ---------------------------------------------------------------------------
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        if "@" not in v or "." not in v:
+            raise ValueError("Invalid email address")
+        if len(v) > 255:
+            raise ValueError("Email too long")
+        return v.lower().strip()
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    user_id: int
+    email: str
+
+
+# ---------------------------------------------------------------------------
+# Auth routes: POST /auth/signup, POST /auth/login, POST /auth/logout
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/signup")
+def auth_signup(req: SignupRequest, response: Response):
+    """Create a new user account with validated email and password."""
+    db = _get_session()
+    try:
+        # Check if user already exists
+        existing = db.query(User).filter_by(email=req.email).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Email already registered")
+
+        # Create user with hashed password
+        user = User(
+            email=req.email,
+            hashed_password=_hash_password(req.password),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        return AuthResponse(user_id=user.id, email=user.email)
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create user")
+    finally:
+        db.close()
+
+
+@app.post("/auth/login")
+def auth_login(req: LoginRequest, response: Response):
+    """Authenticate credentials and establish a server-side session."""
+    db = _get_session()
+    try:
+        user = db.query(User).filter_by(email=req.email).first()
+        if not user or not _verify_password(req.password, user.hashed_password):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        # Create session and set signed cookie
+        token = _create_session_token(user.id)
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=token,
+            max_age=SESSION_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+
+        return AuthResponse(user_id=user.id, email=user.email)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Login failed")
+    finally:
+        db.close()
+
+
+@app.post("/auth/logout")
+def auth_logout(request: Request, response: Response):
+    """Terminate the current session."""
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_token:
+        try:
+            data = _session_serializer.loads(session_token, max_age=SESSION_MAX_AGE)
+            session_id = data.get("session_id")
+            _session_store.pop(session_id, None)
+        except (BadSignature, SignatureExpired):
+            pass
+
+    # Clear the cookie
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path="/")
+    return {"message": "Logged out"}
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    """Return the current authenticated user or 401."""
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not session_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        data = _session_serializer.loads(session_token, max_age=SESSION_MAX_AGE)
+        session_id = data.get("session_id")
+        user_id = _session_store.get(session_id)
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Session expired")
+        db = _get_session()
+        try:
+            user = db.query(User).filter_by(id=user_id).first()
+            if not user:
+                raise HTTPException(status_code=401, detail="User not found")
+            return {"user_id": user.id, "email": user.email}
+        finally:
+            db.close()
+    except (BadSignature, SignatureExpired):
+        raise HTTPException(status_code=401, detail="Session expired")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Auth check failed")
 
 
 @app.get("/api/prescriptions/today")

@@ -325,6 +325,19 @@ class Settings(Base):
 
 
 # ---------------------------------------------------------------------------
+# User model for authentication (ARCH-003)
+# ---------------------------------------------------------------------------
+
+class User(Base):
+    __tablename__ = "user"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False, unique=True)
+    hashed_password = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
+# ---------------------------------------------------------------------------
 # Engine / session helpers
 # ---------------------------------------------------------------------------
 

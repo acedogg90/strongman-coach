@@ -7,3 +7,6 @@ pytest>=7.4.0
 pytest-asyncio>=0.21.0
 httpx>=0.25.0
 python-multipart>=0.0.6
+passlib[bcrypt]>=1.7.4,<2.0
+bcrypt>=3.2.0,<5.0.0
+itsdangerous>=2.1.0
