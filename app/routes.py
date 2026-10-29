@@ -4,10 +4,10 @@ Strongman Coach – API routes.
 Provides backward-compatible /log, /history, /edit, /delete endpoints
 that work with the new schema.
 """
-
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import secrets
 from typing import Optional, List
@@ -42,6 +42,10 @@ from app.strength.warmup_backoff import (
 from app.strength.adjustment_rules import evaluate_adjustments
 
 app = FastAPI(title="Strongman Coach")
+
+# Every 500 below logs its real cause (with traceback) to the server console before the generic message goes back to
+# the browser, so "Failed to create user" and friends can be diagnosed from the uvicorn window.
+logger = logging.getLogger("uvicorn.error")
 
 # ---------------------------------------------------------------------------
 # Startup: init DB and run migration
@@ -283,6 +287,7 @@ def auth_signup(req: SignupRequest, response: Response):
         raise
     except Exception:
         db.rollback()
+        logger.exception("Failed to create user")
         raise HTTPException(status_code=500, detail="Failed to create user")
     finally:
         db.close()
@@ -312,6 +317,7 @@ def auth_login(req: LoginRequest, response: Response):
     except HTTPException:
         raise
     except Exception:
+        logger.exception("Login failed")
         raise HTTPException(status_code=500, detail="Login failed")
     finally:
         db.close()
@@ -359,6 +365,7 @@ def auth_me(request: Request):
     except HTTPException:
         raise
     except Exception:
+        logger.exception("Auth check failed")
         raise HTTPException(status_code=500, detail="Auth check failed")
 
 
@@ -419,6 +426,7 @@ def get_today_prescriptions(current_user: User = Depends(get_current_user)):
         }
 
     except Exception:
+        logger.exception("Failed to get prescriptions")
         raise HTTPException(status_code=500, detail="Failed to get prescriptions")
     finally:
         db.close()
@@ -558,6 +566,7 @@ def sync_offline_sets(req: List[dict], current_user: User = Depends(get_current_
 
     except Exception:
         db.rollback()
+        logger.exception("Failed to sync sets")
         raise HTTPException(status_code=500, detail="Failed to sync sets")
     finally:
         db.close()
@@ -800,6 +809,7 @@ def log_entry(entry: TrainingEntryCreate, current_user: User = Depends(get_curre
 
     except Exception:
         session.rollback()
+        logger.exception("Failed to log entry")
         raise HTTPException(status_code=500, detail="Failed to log entry")
     finally:
         session.close()
@@ -913,6 +923,7 @@ def generate_warmup_sets(req: WarmupRequest, current_user: User = Depends(get_cu
 
     except Exception:
         session.rollback()
+        logger.exception("Failed to generate warm-up sets")
         raise HTTPException(status_code=500, detail="Failed to generate warm-up sets")
     finally:
         session.close()
@@ -1043,6 +1054,7 @@ def generate_backoff_sets(req: BackoffRequest, current_user: User = Depends(get_
 
     except Exception:
         session.rollback()
+        logger.exception("Failed to generate back-off sets")
         raise HTTPException(status_code=500, detail="Failed to generate back-off sets")
     finally:
         session.close()
@@ -1127,6 +1139,7 @@ def edit_entry(entry_id: int, updates: TrainingEntryUpdate, current_user: User =
         raise
     except Exception:
         session.rollback()
+        logger.exception("Failed to update entry")
         raise HTTPException(status_code=500, detail="Failed to update entry")
     finally:
         session.close()
@@ -1160,6 +1173,7 @@ def delete_entry(entry_id: int, current_user: User = Depends(get_current_user)):
         raise
     except Exception:
         session.rollback()
+        logger.exception("Failed to delete entry")
         raise HTTPException(status_code=500, detail="Failed to delete entry")
     finally:
         session.close()
@@ -1245,6 +1259,7 @@ def create_program(req: ProgramCreateRequest, current_user: User = Depends(get_c
         raise
     except Exception:
         db.rollback()
+        logger.exception("Failed to create program")
         raise HTTPException(status_code=500, detail="Failed to create program")
     finally:
         db.close()
@@ -1345,6 +1360,7 @@ def create_session(req: SessionCreate, current_user: User = Depends(get_current_
         raise
     except Exception:
         db.rollback()
+        logger.exception("Failed to create session")
         raise HTTPException(status_code=500, detail="Failed to create session")
     finally:
         db.close()
@@ -1483,6 +1499,7 @@ def log_set(session_id: int, req: SetLogRequest, current_user: User = Depends(ge
         raise
     except Exception:
         db.rollback()
+        logger.exception("Failed to log set")
         raise HTTPException(status_code=500, detail="Failed to log set")
     finally:
         db.close()
@@ -1609,6 +1626,7 @@ def complete_session(session_id: int, req: SessionCompleteRequest = None, curren
         raise
     except Exception:
         db.rollback()
+        logger.exception("Failed to complete session")
         raise HTTPException(status_code=500, detail="Failed to complete session")
     finally:
         db.close()
@@ -1690,6 +1708,7 @@ def get_sessions(
     except HTTPException:
         raise
     except Exception:
+        logger.exception("Failed to get sessions")
         raise HTTPException(status_code=500, detail="Failed to get sessions")
     finally:
         db.close()
@@ -1752,6 +1771,7 @@ def get_settings(current_user: User = Depends(get_current_user)):
         settings = load_all_settings(db)
         return [{"key": k, "value": v} for k, v in settings.items()]
     except Exception:
+        logger.exception("Failed to get settings")
         raise HTTPException(status_code=500, detail="Failed to get settings")
     finally:
         db.close()
@@ -1768,6 +1788,7 @@ def update_setting(req: SettingRequest, current_user: User = Depends(get_current
         return {"key": row.key, "value": row.value}
     except Exception:
         db.rollback()
+        logger.exception("Failed to update setting")
         raise HTTPException(status_code=500, detail="Failed to update setting")
     finally:
         db.close()
@@ -1786,6 +1807,7 @@ def bulk_update_settings(req: dict, current_user: User = Depends(get_current_use
         return {"updated": len(valid_updates)}
     except Exception:
         db.rollback()
+        logger.exception("Failed to update settings")
         raise HTTPException(status_code=500, detail="Failed to update settings")
     finally:
         db.close()
@@ -1813,6 +1835,7 @@ def export_settings_csv(current_user: User = Depends(get_current_user)):
             headers={"Content-Disposition": "attachment; filename=settings.csv"},
         )
     except Exception:
+        logger.exception("Failed to export settings")
         raise HTTPException(status_code=500, detail="Failed to export settings")
     finally:
         db.close()
@@ -1837,6 +1860,7 @@ def import_settings_csv(req: ImportRequest, current_user: User = Depends(get_cur
         return {"imported": len(settings)}
     except Exception:
         db.rollback()
+        logger.exception("Failed to import settings")
         raise HTTPException(status_code=500, detail="Failed to import settings")
     finally:
         db.close()
@@ -1864,6 +1888,7 @@ def get_athlete(current_user: User = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception:
+        logger.exception("Failed to get athlete")
         raise HTTPException(status_code=500, detail="Failed to get athlete")
     finally:
         db.close()
@@ -1909,6 +1934,7 @@ def update_athlete(req: AthleteUpdate, current_user: User = Depends(get_current_
         raise
     except Exception:
         db.rollback()
+        logger.exception("Failed to update athlete")
         raise HTTPException(status_code=500, detail="Failed to update athlete")
     finally:
         db.close()
@@ -1941,6 +1967,7 @@ def get_bodyweight(current_user: User = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception:
+        logger.exception("Failed to get bodyweight")
         raise HTTPException(status_code=500, detail="Failed to get bodyweight")
     finally:
         db.close()
@@ -1982,6 +2009,7 @@ def add_bodyweight(req: BodyweightEntry, current_user: User = Depends(get_curren
         raise
     except Exception:
         db.rollback()
+        logger.exception("Failed to add bodyweight")
         raise HTTPException(status_code=500, detail="Failed to add bodyweight")
     finally:
         db.close()
@@ -2001,6 +2029,7 @@ def export_csv(current_user: User = Depends(get_current_user)):
             headers={"Content-Disposition": "attachment; filename=sessions.csv"},
         )
     except Exception:
+        logger.exception("Failed to export CSV")
         raise HTTPException(status_code=500, detail="Failed to export CSV")
     finally:
         db.close()
@@ -2017,6 +2046,7 @@ def import_csv(req: ImportRequest, current_user: User = Depends(get_current_user
         return result
     except Exception:
         db.rollback()
+        logger.exception("Failed to import CSV")
         raise HTTPException(status_code=500, detail="Failed to import CSV")
     finally:
         db.close()
